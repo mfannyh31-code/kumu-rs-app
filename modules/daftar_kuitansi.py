@@ -154,7 +154,6 @@ def show_edit_dialog(receipt_no):
         
         st.markdown(f"<h4 style='color:#0F172A;'>Edit Kuitansi #{receipt_no}</h4>", unsafe_allow_html=True)
         
-        # Ambil data hirarki master data
         service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
         scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
 
@@ -528,7 +527,7 @@ def render_page():
     params = [date_mask]
     
     if current_role not in ["Super Admin", "Bendahara"]:
-        query += " AND cashier_username = ?"
+        query += " AND UPPER(cashier_username) = ?"
         params.append(current_logged_user)
 
     if ksr.strip():
@@ -606,15 +605,11 @@ def render_page():
             with r8:
                 st.markdown('<div class="action-stack">', unsafe_allow_html=True)
                 
-                # Tombol Detail selalu bisa dilihat semua role
                 st.markdown('<div class="btn-kwt-det">', unsafe_allow_html=True)
                 if st.button("Detail", key=f"d_{row['receipt_no']}", use_container_width=True):
                     show_transaction_detail(row['receipt_no'])
                 st.markdown('</div>', unsafe_allow_html=True)
                 
-                # Pengecekan Hak Akses Tombol Edit dan Hapus:
-                # - Super Admin bisa edit/hapus semua kuitansi
-                # - Bendahara atau Kasir hanya bisa edit/hapus kuitansi miliknya sendiri
                 row_cashier = str(row['cashier_username']).upper()
                 can_modify = False
                 if current_role == "Super Admin":
