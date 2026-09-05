@@ -11,8 +11,14 @@ if not DATABASE_URL:
     st.error("DATABASE_URL belum dikonfigurasi! Harap masukkan connection string Supabase ke Streamlit Secrets.")
     st.stop()
 
-# Membuat koneksi engine ke PostgreSQL Supabase
-engine = create_engine(DATABASE_URL)
+# Membuat koneksi engine ke PostgreSQL Supabase (dengan connection pool parameters untuk stabilitas cloud)
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=5,
+    max_overflow=10,
+    pool_timeout=30,
+    pool_recycle=1800
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
@@ -137,6 +143,31 @@ def init_db():
                 input_by TEXT
             )
         """))
+
+# ==========================================
+# FUNGSI CACHED QUERY UNTUK PERFORMA CLOUD
+# ==========================================
+
+@st.cache_data(ttl=600)
+def cached_read_query(query_str):
+    """
+    Menjalankan kueri baca dengan caching Streamlit (berlaku 10 menit) 
+    agar perpindahan menu antar halaman terasa instan dan tidak membebani Supabase.
+    """
+    with engine.connect() as conn:
+        import pandas as pd
+        df = pd.read_sql_query(text(query_str), conn)
+    return df
+
+def clear_data_cache():
+    """
+    Membersihkan cache secara manual jika terjadi penambahan/perubahan data master baru.
+    """
+    st.cache_data.clear()
+
+# ==========================================
+# FUNGSI BANTUAN UMUM
+# ==========================================
 
 def format_rupiah(value):
     try:
