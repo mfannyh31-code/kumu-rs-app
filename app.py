@@ -219,5 +219,10 @@ elif current_selected_menu == "pengaturan_user" and current_rl != "Super Admin":
     st.session_state.current_menu = "dashboard"
     st.rerun()
 
-if st.session_state.current_menu in routes:
-    routes[st.session_state.current_menu]()
+# Membungkus perenderan halaman dengan @st.fragment agar navigasi & klik tombol berjalan instan
+@st.fragment
+def render_active_page():
+    if st.session_state.current_menu in routes:
+        routes[st.session_state.current_menu]()
+
+render_active_page()
