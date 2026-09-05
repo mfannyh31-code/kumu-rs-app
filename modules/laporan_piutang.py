@@ -3,6 +3,7 @@ import pandas as pd
 import io
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 def format_angka(val):
     try: return f"{int(float(val)):,}".replace(",", ".")
@@ -94,17 +95,16 @@ def render_page():
     
     st.markdown('</div>', unsafe_allow_html=True)
 
-    conn = get_db()
-    # Query utama tabel receivables digabungkan dengan rincian item piutang (receivables_items)
-    query_rep = """
-        SELECT r.*, i.category_name as unit_layanan, i.action_name as jenis_tindakan, i.amount as item_amount, i.paid_status as item_status
-        FROM receivables r
-        LEFT JOIN receivables_items i ON r.id = i.debt_id
-        WHERE r.due_date LIKE ?
-        ORDER BY r.id DESC
-    """
-    df_all = pd.read_sql_query(query_rep, conn, params=[date_mask])
-    conn.close()
+    with get_db() as conn:
+        # Query utama tabel receivables digabungkan dengan rincian item piutang (receivables_items)
+        query_rep = """
+            SELECT r.*, i.category_name as unit_layanan, i.action_name as jenis_tindakan, i.amount as item_amount, i.paid_status as item_status
+            FROM receivables r
+            LEFT JOIN receivables_items i ON r.id = i.debt_id
+            WHERE r.due_date LIKE :dmask
+            ORDER BY r.id DESC
+        """
+        df_all = pd.read_sql_query(text(query_rep), conn, params={"dmask": date_mask})
 
     if not df_all.empty:
         # Menghitung metrik berdasarkan ID unik piutang agar tidak terduplikasi akibat join item

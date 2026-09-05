@@ -1,8 +1,8 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 def render_page():
     render_header("➕ Input Pengembalian Dana (Refund)", "Catat pengembalian dana dengan pemilihan hierarki layanan (Layanan ➔ Unit ➔ Tindakan).")
@@ -14,8 +14,6 @@ def render_page():
     st.markdown("<div style='height:10px;'></div>", unsafe_allow_html=True)
     
     tab_kuitansi, tab_manual = st.tabs(["📄 Refund Kuitansi", "📑 Refund Manual (Mandiri)"])
-
-    conn = get_db()
 
     # ==========================================
     # TAB 1: REFUND KUITANSI
@@ -30,17 +28,18 @@ def render_page():
         if 'rf_next_row_id' not in st.session_state:
             st.session_state.rf_next_row_id = 2
 
-        try:
-            service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
-            scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
+        with get_db() as conn:
+            try:
+                service_cats_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
+                scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
 
-            categories_df = pd.read_sql_query("SELECT id, service_category_id, name FROM categories ORDER BY name ASC", conn)
-            actions_df = pd.read_sql_query("SELECT id, category_id, name, price FROM actions ORDER BY name ASC", conn)
-        except Exception:
-            scats_list = ["Select"]
-            service_cats_df = pd.DataFrame()
-            categories_df = pd.DataFrame()
-            actions_df = pd.DataFrame()
+                categories_df = pd.read_sql_query(text("SELECT id, service_category_id, name FROM categories ORDER BY name ASC"), conn)
+                actions_df = pd.read_sql_query(text("SELECT id, category_id, name, price FROM actions ORDER BY name ASC"), conn)
+            except Exception:
+                scats_list = ["Select"]
+                service_cats_df = pd.DataFrame()
+                categories_df = pd.DataFrame()
+                actions_df = pd.DataFrame()
 
         st.markdown("##### 📄 Informasi Dokumen Pengembalian")
         h1, h2, h3 = st.columns([1.5, 1.5, 1.5])
@@ -194,56 +193,76 @@ def render_page():
             elif not items_data:
                 st.error("Pilih minimal satu tindakan yang dikembalikan.")
             else:
-                c = conn.cursor()
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS refund_transactions (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        receipt_no TEXT UNIQUE, receipt_date TEXT, input_date TEXT, shift TEXT, 
-                        cashier_username TEXT, total_amount REAL, payment_method TEXT,
-                        pay_tunai REAL, pay_transfer REAL, notes TEXT
-                    )
-                """)
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS refund_transaction_items (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        receipt_no TEXT, book_no TEXT, category_name TEXT, action_name TEXT,
-                        price REAL, qty INTEGER, discount REAL, subtotal REAL
-                    )
-                """)
-                
                 try:
-                    c.execute("""
-                        INSERT INTO refund_transactions 
-                        (receipt_no, receipt_date, input_date, shift, cashier_username, total_amount, payment_method, pay_tunai, pay_transfer, notes)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (no_urut_kertas.strip(), str(tgl_kuitansi), str(datetime.today().date()), shift_val, st.session_state.user, 
-                          grand_total_actions, summary_method_str, pay_tunai, pay_transfer, rf_notes))
+                    with get_db() as conn:
+                        with conn.begin():
+                            conn.execute(text("""
+                                CREATE TABLE IF NOT EXISTS refund_transactions (
+                                    id SERIAL PRIMARY KEY,
+                                    receipt_no TEXT UNIQUE, receipt_date TEXT, input_date TEXT, shift TEXT, 
+                                    cashier_username TEXT, total_amount REAL, payment_method TEXT,
+                                    pay_tunai REAL, pay_transfer REAL, notes TEXT
+                                )
+                            """))
+                            conn.execute(text("""
+                                CREATE TABLE IF NOT EXISTS refund_transaction_items (
+                                    id SERIAL PRIMARY KEY,
+                                    receipt_no TEXT, book_no TEXT, category_name TEXT, action_name TEXT,
+                                    price REAL, qty INTEGER, discount REAL, subtotal REAL
+                                )
+                            """))
+                            
+                            conn.execute(text("""
+                                INSERT INTO refund_transactions 
+                                (receipt_no, receipt_date, input_date, shift, cashier_username, total_amount, payment_method, pay_tunai, pay_transfer, notes)
+                                VALUES (:rno, :rdate, :idate, :shf, :cuser, :totamt, :pmeth, :ptun, :ptf, :notes)
+                            """), {
+                                "rno": no_urut_kertas.strip(),
+                                "rdate": str(tgl_kuitansi),
+                                "idate": str(datetime.today().date()),
+                                "shf": shift_val,
+                                "cuser": st.session_state.get('user', 'admin'),
+                                "totamt": grand_total_actions,
+                                "pmeth": summary_method_str,
+                                "ptun": pay_tunai,
+                                "ptf": pay_transfer,
+                                "notes": rf_notes
+                            })
 
-                    for itm in items_data:
-                        c.execute("""
-                            INSERT INTO refund_transaction_items 
-                            (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """, (no_urut_kertas.strip(), itm['book_no'], itm['category_name'], itm['action_name'], itm['price'], itm['qty'], itm['discount'], itm['subtotal']))
+                            for itm in items_data:
+                                conn.execute(text("""
+                                    INSERT INTO refund_transaction_items 
+                                    (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
+                                    VALUES (:rno, :bk, :cname, :aname, :prc, :qty, :disc, :sub)
+                                """), {
+                                    "rno": no_urut_kertas.strip(),
+                                    "bk": itm['book_no'],
+                                    "cname": itm['category_name'],
+                                    "aname": itm['action_name'],
+                                    "prc": itm['price'],
+                                    "qty": itm['qty'],
+                                    "disc": itm['discount'],
+                                    "sub": itm['subtotal']
+                                })
                     
-                    conn.commit()
                     st.success(f"✓ Pengembalian kuitansi #{no_urut_kertas} berhasil disimpan!")
                     st.session_state.rf_rows_list = [1]
                     st.session_state.rf_form_reset_cnt += 1
                     st.session_state.current_menu = "pengembalian"
                     st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("Nomor Kertas/Referensi sudah digunakan. Silakan gunakan nomor unik.")
+                except Exception as e:
+                    st.error(f"Nomor Kertas/Referensi sudah digunakan atau terjadi kesalahan. (Error: {e})")
 
     # ==========================================
     # TAB 2: REFUND MANUAL
     # ==========================================
     with tab_manual:
-        try:
-            categories_df = pd.read_sql_query("SELECT id, name FROM categories ORDER BY name ASC", conn)
-            cats_list_man = categories_df['name'].tolist() if not categories_df.empty else ["Umum"]
-        except:
-            cats_list_man = ["Umum"]
+        with get_db() as conn:
+            try:
+                categories_df = pd.read_sql_query(text("SELECT id, name FROM categories ORDER BY name ASC"), conn)
+                cats_list_man = categories_df['name'].tolist() if not categories_df.empty else ["Umum"]
+            except:
+                cats_list_man = ["Umum"]
 
         st.markdown("##### 📄 Form Pengembalian Dana Mandiri")
         
@@ -270,21 +289,30 @@ def render_page():
             if not m_name.strip() or m_amt <= 0:
                 st.error("⚠️ Nama penerima dan nominal wajib diisi!")
             else:
-                c = conn.cursor()
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS manual_refunds (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, refund_date TEXT, shift TEXT, recipient_name TEXT,
-                        reference_no TEXT, unit_service TEXT, action_name TEXT, amount REAL,
-                        method TEXT, notes TEXT, created_by TEXT
-                    )
-                """)
-                c.execute("""
-                    INSERT INTO manual_refunds (refund_date, shift, recipient_name, reference_no, unit_service, action_name, amount, method, notes, created_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (str(m_date), m_shift, m_name.strip(), m_rcpt.strip(), m_unit, m_action.strip(), m_amt, m_method, m_notes.strip(), str(st.session_state.get('user', 'admin')).upper()))
-                conn.commit()
+                with get_db() as conn:
+                    with conn.begin():
+                        conn.execute(text("""
+                            CREATE TABLE IF NOT EXISTS manual_refunds (
+                                id SERIAL PRIMARY KEY, refund_date TEXT, shift TEXT, recipient_name TEXT,
+                                reference_no TEXT, unit_service TEXT, action_name TEXT, amount REAL,
+                                method TEXT, notes TEXT, created_by TEXT
+                            )
+                        """))
+                        conn.execute(text("""
+                            INSERT INTO manual_refunds (refund_date, shift, recipient_name, reference_no, unit_service, action_name, amount, method, notes, created_by)
+                            VALUES (:rdate, :shf, :rcp, :refno, :unit, :act, :amt, :meth, :notes, :usr)
+                        """), {
+                            "rdate": str(m_date),
+                            "shf": m_shift,
+                            "rcp": m_name.strip(),
+                            "refno": m_rcpt.strip(),
+                            "unit": m_unit,
+                            "act": m_action.strip(),
+                            "amt": m_amt,
+                            "meth": m_method,
+                            "notes": m_notes.strip(),
+                            "usr": str(st.session_state.get('user', 'admin')).upper()
+                        })
                 st.success("✓ Data pengembalian manual berhasil disimpan!")
                 st.session_state.current_menu = "pengembalian"
                 st.rerun()
-                
-    conn.close()

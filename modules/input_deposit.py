@@ -1,7 +1,7 @@
 import streamlit as st
-import sqlite3
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 def render_page():
     render_header("💰 Input Uang Muka / Deposit Pasien", "Catat setoran deposit baru atau top-up saldo pasien dengan mudah")
@@ -30,23 +30,25 @@ def render_page():
 
     # Jika auto_rm terisi dari tombol top-up, cari namanya langsung dari database
     if auto_rm and not st.session_state[name_key]:
-        conn_auto = get_db()
-        res_auto = conn_auto.cursor().execute("SELECT patient_name FROM deposits WHERE patient_id = ? LIMIT 1", (auto_rm,)).fetchone()
-        if res_auto:
-            st.session_state[name_key] = res_auto[0]
-        conn_auto.close()
+        with get_db() as conn_auto:
+            res_auto = conn_auto.execute(
+                text("SELECT patient_name FROM deposits WHERE patient_id = :pid LIMIT 1"), 
+                {"pid": auto_rm}
+            ).fetchone()
+            if res_auto:
+                st.session_state[name_key] = res_auto[0]
 
     # Callback reaktif saat No. RM diubah
     def update_name_from_db():
         rm_val = st.session_state.get(rm_key, "").strip()
         if rm_val:
-            db_conn = get_db()
-            cursor = db_conn.cursor()
-            cursor.execute("SELECT patient_name FROM deposits WHERE patient_id = ? LIMIT 1", (rm_val,))
-            res = cursor.fetchone()
-            if res:
-                st.session_state[name_key] = res[0]
-            db_conn.close()
+            with get_db() as db_conn:
+                res = db_conn.execute(
+                    text("SELECT patient_name FROM deposits WHERE patient_id = :pid LIMIT 1"), 
+                    {"pid": rm_val}
+                ).fetchone()
+                if res:
+                    st.session_state[name_key] = res[0]
 
     col_i1, col_i2 = st.columns(2)
     with col_i1:
@@ -66,9 +68,11 @@ def render_page():
         # Cek sisa saldo aktif secara instan berdasarkan No. RM yang aktif diketik/dipilih
         current_rm_val = patient_rm.strip()
         if current_rm_val:
-            conn_s = get_db()
-            all_dep = conn_s.cursor().execute("SELECT amount FROM deposits WHERE patient_id = ?", (current_rm_val,)).fetchall()
-            conn_s.close()
+            with get_db() as conn_s:
+                all_dep = conn_s.execute(
+                    text("SELECT amount FROM deposits WHERE patient_id = :pid"), 
+                    {"pid": current_rm_val}
+                ).fetchall()
             if all_dep:
                 total_setor = sum([row[0] for row in all_dep if row[0] > 0])
                 total_pakai = sum([abs(row[0]) for row in all_dep if row[0] < 0])
@@ -100,38 +104,24 @@ def render_page():
             elif deposit_amount <= 0:
                 st.error("Nominal setoran harus lebih besar dari 0.")
             else:
-                conn = get_db()
-                c = conn.cursor()
-                
-                # Pastikan tabel & kolom shift lengkap
-                c.execute("""CREATE TABLE IF NOT EXISTS deposits (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT, 
-                    patient_id TEXT, 
-                    patient_name TEXT, 
-                    amount REAL, 
-                    deposit_date TEXT, 
-                    shift TEXT,
-                    payment_method TEXT, 
-                    notes TEXT, 
-                    status TEXT, 
-                    input_by TEXT
-                )""")
-                
-                c.execute("PRAGMA table_info(deposits)")
-                cols = [row[1] for row in c.fetchall()]
-                if "shift" not in cols:
-                    c.execute("ALTER TABLE deposits ADD COLUMN shift TEXT DEFAULT 'Pagi'")
-                
                 current_user = str(st.session_state.get('user', 'admin')).upper()
 
-                # Masukkan nilai positif untuk setoran/topup baru beserta shift dan user
-                c.execute("""
-                    INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'ACTIVE', ?)
-                """, (final_rm, final_name, float(deposit_amount), str(deposit_date), dep_shift, payment_method, notes.strip(), current_user))
+                with get_db() as conn:
+                    with conn.begin():
+                        conn.execute(text("""
+                            INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
+                            VALUES (:pid, :pname, :amt, :ddate, :shf, :pmeth, :notes, 'ACTIVE', :usr)
+                        """), {
+                            "pid": final_rm,
+                            "pname": final_name,
+                            "amt": float(deposit_amount),
+                            "ddate": str(deposit_date),
+                            "shf": dep_shift,
+                            "pmeth": payment_method,
+                            "notes": notes.strip(),
+                            "usr": current_user
+                        })
                 
-                conn.commit()
-                conn.close()
                 st.success(f"✓ Setoran deposit sebesar {format_rupiah(deposit_amount)} (Shift: {dep_shift}) berhasil disimpan untuk **{final_name}** oleh {current_user}!")
                 st.session_state.deposit_reset_cnt += 1
                 st.rerun()

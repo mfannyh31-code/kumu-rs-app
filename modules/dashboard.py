@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from db import get_db, format_rupiah, render_header, get_base64_image
+from sqlalchemy import text
 
 def render_page():
     # --- CSS FINISHING & PERBAIKAN TATA LETAK DASHBOARD ---
@@ -108,58 +109,57 @@ def render_page():
     st.markdown(f"👋 **{salam}, {active_user} ({active_role})!** Berikut adalah ringkasan performa dan pemantauan keuangan Anda hari ini.")
     st.markdown("<div style='height:4px;'></div>", unsafe_allow_html=True)
 
-    conn = get_db()
-
     # --- AMBIL DATA METRIK HARI INI (DIFILTER BERDASARKAN ROLE) ---
     try:
-        if active_role == "Kasir":
-            # Kasir hanya melihat data miliknya sendiri
-            q_rev = """
-                SELECT SUM(i.subtotal) 
-                FROM transaction_items i 
-                JOIN transactions t ON i.receipt_no = t.receipt_no 
-                WHERE t.receipt_date LIKE ? AND UPPER(TRIM(t.cashier_username)) = UPPER(TRIM(?))
-            """
-            res_rev = pd.read_sql_query(q_rev, conn, params=[f"{today_str}%", active_user])
-            total_pendapatan_hari_ini = float(res_rev.iloc[0, 0] or 0.0)
+        with get_db() as conn:
+            if active_role == "Kasir":
+                # Kasir hanya melihat data miliknya sendiri
+                q_rev = """
+                    SELECT SUM(i.subtotal) 
+                    FROM transaction_items i 
+                    JOIN transactions t ON i.receipt_no = t.receipt_no 
+                    WHERE t.receipt_date LIKE :dmask AND UPPER(TRIM(t.cashier_username)) = UPPER(TRIM(:cuser))
+                """
+                res_rev = pd.read_sql_query(text(q_rev), conn, params={"dmask": f"{today_str}%", "cuser": active_user})
+                total_pendapatan_hari_ini = float(res_rev.iloc[0, 0] or 0.0)
 
-            q_piu = "SELECT SUM(remaining_debt) FROM receivables WHERE status = 'Belum Lunas'"
-            res_piu = pd.read_sql_query(q_piu, conn)
-            total_sisa_piutang = float(res_piu.iloc[0, 0] or 0.0)
+                q_piu = "SELECT SUM(remaining_debt) FROM receivables WHERE status = 'Belum Lunas'"
+                res_piu = pd.read_sql_query(text(q_piu), conn)
+                total_sisa_piutang = float(res_piu.iloc[0, 0] or 0.0)
 
-            q_tx_count = "SELECT COUNT(*) FROM transactions WHERE receipt_date LIKE ? AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(?))"
-            res_tx_count = pd.read_sql_query(q_tx_count, conn, params=[f"{today_str}%", active_user])
-            total_transaksi_count = int(res_tx_count.iloc[0, 0] or 0)
+                q_tx_count = "SELECT COUNT(*) FROM transactions WHERE receipt_date LIKE :dmask AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(:cuser))"
+                res_tx_count = pd.read_sql_query(text(q_tx_count), conn, params={"dmask": f"{today_str}%", "cuser": active_user})
+                total_transaksi_count = int(res_tx_count.iloc[0, 0] or 0)
 
-            q_kanal = """
-                SELECT SUM(pay_tunai) as tunai, SUM(pay_transfer) as transfer, SUM(pay_edc) as edc, SUM(pay_qris) as qris, SUM(pay_va) as va 
-                FROM transactions 
-                WHERE receipt_date LIKE ? AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(?))
-            """
-            df_kanal = pd.read_sql_query(q_kanal, conn, params=[f"{today_str}%", active_user])
-            
-            df_latest_tx = pd.read_sql_query(
-                "SELECT receipt_no, receipt_date, cashier_username, final_amount, payment_method FROM transactions WHERE receipt_date LIKE ? AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(?)) ORDER BY id DESC LIMIT 5", 
-                conn, params=[f"{today_str}%", active_user]
-            )
-        else:
-            # Bendahara & Super Admin melihat keseluruhan data instansi
-            q_rev = "SELECT SUM(subtotal) FROM transaction_items i JOIN transactions t ON i.receipt_no = t.receipt_no WHERE t.receipt_date LIKE ?"
-            res_rev = pd.read_sql_query(q_rev, conn, params=[f"{today_str}%"])
-            total_pendapatan_hari_ini = float(res_rev.iloc[0, 0] or 0.0)
+                q_kanal = """
+                    SELECT SUM(pay_tunai) as tunai, SUM(pay_transfer) as transfer, SUM(pay_edc) as edc, SUM(pay_qris) as qris, SUM(pay_va) as va 
+                    FROM transactions 
+                    WHERE receipt_date LIKE :dmask AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(:cuser))
+                """
+                df_kanal = pd.read_sql_query(text(q_kanal), conn, params={"dmask": f"{today_str}%", "cuser": active_user})
+                
+                df_latest_tx = pd.read_sql_query(
+                    text("SELECT receipt_no, receipt_date, cashier_username, final_amount, payment_method FROM transactions WHERE receipt_date LIKE :dmask AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(:cuser)) ORDER BY id DESC LIMIT 5"), 
+                    conn, params={"dmask": f"{today_str}%", "cuser": active_user}
+                )
+            else:
+                # Bendahara & Super Admin melihat keseluruhan data instansi
+                q_rev = "SELECT SUM(subtotal) FROM transaction_items i JOIN transactions t ON i.receipt_no = t.receipt_no WHERE t.receipt_date LIKE :dmask"
+                res_rev = pd.read_sql_query(text(q_rev), conn, params={"dmask": f"{today_str}%"})
+                total_pendapatan_hari_ini = float(res_rev.iloc[0, 0] or 0.0)
 
-            q_piu = "SELECT SUM(remaining_debt) FROM receivables WHERE status = 'Belum Lunas'"
-            res_piu = pd.read_sql_query(q_piu, conn)
-            total_sisa_piutang = float(res_piu.iloc[0, 0] or 0.0)
+                q_piu = "SELECT SUM(remaining_debt) FROM receivables WHERE status = 'Belum Lunas'"
+                res_piu = pd.read_sql_query(text(q_piu), conn)
+                total_sisa_piutang = float(res_piu.iloc[0, 0] or 0.0)
 
-            q_tx_count = "SELECT COUNT(*) FROM transactions WHERE receipt_date LIKE ?"
-            res_tx_count = pd.read_sql_query(q_tx_count, conn, params=[f"{today_str}%"])
-            total_transaksi_count = int(res_tx_count.iloc[0, 0] or 0)
+                q_tx_count = "SELECT COUNT(*) FROM transactions WHERE receipt_date LIKE :dmask"
+                res_tx_count = pd.read_sql_query(text(q_tx_count), conn, params={"dmask": f"{today_str}%"})
+                total_transaksi_count = int(res_tx_count.iloc[0, 0] or 0)
 
-            q_kanal = "SELECT SUM(pay_tunai) as tunai, SUM(pay_transfer) as transfer, SUM(pay_edc) as edc, SUM(pay_qris) as qris, SUM(pay_va) as va FROM transactions WHERE receipt_date LIKE ?"
-            df_kanal = pd.read_sql_query(q_kanal, conn, params=[f"{today_str}%"])
-            
-            df_latest_tx = pd.read_sql_query("SELECT receipt_no, receipt_date, cashier_username, final_amount, payment_method FROM transactions WHERE receipt_date LIKE ? ORDER BY id DESC LIMIT 5", conn, params=[f"{today_str}%"])
+                q_kanal = "SELECT SUM(pay_tunai) as tunai, SUM(pay_transfer) as transfer, SUM(pay_edc) as edc, SUM(pay_qris) as qris, SUM(pay_va) as va FROM transactions WHERE receipt_date LIKE :dmask"
+                df_kanal = pd.read_sql_query(text(q_kanal), conn, params={"dmask": f"{today_str}%"})
+                
+                df_latest_tx = pd.read_sql_query(text("SELECT receipt_no, receipt_date, cashier_username, final_amount, payment_method FROM transactions WHERE receipt_date LIKE :dmask ORDER BY id DESC LIMIT 5"), conn, params={"dmask": f"{today_str}%"})
 
         t_tunai = float(df_kanal.iloc[0]['tunai'] or 0) if not df_kanal.empty else 0
         t_transfer = float(df_kanal.iloc[0]['transfer'] or 0) if not df_kanal.empty else 0
@@ -174,8 +174,6 @@ def render_page():
         total_transaksi_count = 0
         t_tunai, t_transfer, t_edc, t_qris, t_va, grand_total_kanal = 0, 0, 0, 0, 0, 0
         df_latest_tx = pd.DataFrame()
-
-    conn.close()
 
     # --- KARTU METRIK UTAMA (KPI) ---
     c1, c2, c3, c4 = st.columns(4)

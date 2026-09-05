@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 # =========================================================
 # MODAL KONFIRMASI HAPUS PIUTANG
@@ -26,13 +27,11 @@ def confirm_delete_piutang_dialog(debt_id, receipt_no, patient_name):
             st.rerun()
     with c2:
         if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_piu_{debt_id}"):
-            conn_del = get_db()
-            c_del = conn_del.cursor()
-            c_del.execute("DELETE FROM receivables WHERE id = ?", (debt_id,))
-            c_del.execute("DELETE FROM receivables_items WHERE debt_id = ?", (debt_id,))
-            c_del.execute("DELETE FROM receivables_payments WHERE debt_id = ?", (debt_id,))
-            conn_del.commit()
-            conn_del.close()
+            with get_db() as conn_del:
+                with conn_del.begin():
+                    conn_del.execute(text("DELETE FROM receivables WHERE id = :did"), {"did": debt_id})
+                    conn_del.execute(text("DELETE FROM receivables_items WHERE debt_id = :did"), {"did": debt_id})
+                    conn_del.execute(text("DELETE FROM receivables_payments WHERE debt_id = :did"), {"did": debt_id})
             st.success("Piutang berhasil dihapus!")
             st.rerun()
 
@@ -41,33 +40,35 @@ def confirm_delete_piutang_dialog(debt_id, receipt_no, patient_name):
 # =========================================================
 @st.dialog("💳 Pembayaran Piutang Pasien", width="large")
 def bayar_piutang_dialog(debt_id, patient_name):
-    conn = get_db()
-    c = conn.cursor()
+    with get_db() as conn:
+        with conn.begin():
+            conn.execute(text("""
+                CREATE TABLE IF NOT EXISTS receivables_payments (
+                    id SERIAL PRIMARY KEY,
+                    debt_id INTEGER,
+                    pay_date TEXT,
+                    shift TEXT,
+                    amount REAL,
+                    method TEXT,
+                    notes TEXT,
+                    input_by TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
 
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS receivables_payments (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            debt_id INTEGER,
-            pay_date TEXT,
-            shift TEXT,
-            amount REAL,
-            method TEXT,
-            notes TEXT,
-            input_by TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    """)
-    conn.commit()
+        res_debt = conn.execute(text("SELECT * FROM receivables WHERE id = :did"), {"did": debt_id})
+        debt_row = res_debt.fetchone()
+        debt_cols = list(res_debt.keys())
+        debt_info = dict(zip(debt_cols, debt_row)) if debt_row else {}
+        
+        # Hanya ambil item yang belum lunas (paid_status != 'Lunas')
+        res_items = conn.execute(text("SELECT * FROM receivables_items WHERE debt_id = :did AND paid_status != 'Lunas'"), {"did": debt_id})
+        item_rows = res_items.fetchall()
+        item_cols = list(res_items.keys())
+        items = [dict(zip(item_cols, r)) for r in item_rows]
 
-    c.execute("SELECT * FROM receivables WHERE id = ?", (debt_id,))
-    debt_info = c.fetchone()
-    
-    # Hanya ambil item yang belum lunas (paid_status != 'Lunas')
-    c.execute("SELECT * FROM receivables_items WHERE debt_id = ? AND paid_status != 'Lunas'", (debt_id,))
-    items = c.fetchall()
-
-    st.markdown(f"Pasien: **{patient_name}** | No. Ref: **{debt_info['receipt_no']}**")
-    st.markdown(f"Sisa Total Piutang: <strong style='color:#EF4444;'>{format_rupiah(debt_info['remaining_debt'])}</strong>", unsafe_allow_html=True)
+    st.markdown(f"Pasien: **{patient_name}** | No. Ref: **{debt_info.get('receipt_no', '')}**")
+    st.markdown(f"Sisa Total Piutang: <strong style='color:#EF4444;'>{format_rupiah(debt_info.get('remaining_debt', 0))}</strong>", unsafe_allow_html=True)
     st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
 
     selected_items_to_pay = []
@@ -113,41 +114,54 @@ def bayar_piutang_dialog(debt_id, patient_name):
                 try:
                     current_user = str(st.session_state.get('user', 'ADMIN')).upper()
                     
-                    c.execute("""
-                        INSERT INTO receivables_payments (debt_id, pay_date, shift, amount, method, notes, input_by)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (debt_id, str(pay_date), pay_shift, actual_pay_amount, pay_method, pay_notes, current_user))
+                    with get_db() as conn:
+                        with conn.begin():
+                            conn.execute(text("""
+                                INSERT INTO receivables_payments (debt_id, pay_date, shift, amount, method, notes, input_by)
+                                VALUES (:did, :pdate, :shf, :amt, :meth, :notes, :usr)
+                            """), {
+                                "did": debt_id,
+                                "pdate": str(pay_date),
+                                "shf": pay_shift,
+                                "amt": actual_pay_amount,
+                                "meth": pay_method,
+                                "notes": pay_notes,
+                                "usr": current_user
+                            })
 
-                    sisa_bayar = actual_pay_amount
-                    for itm in selected_items_to_pay:
-                        itm_id = itm['id']
-                        itm_amt = float(itm['amount'])
-                        
-                        if sisa_bayar >= itm_amt:
-                            c.execute("UPDATE receivables_items SET paid_status = 'Lunas' WHERE id = ?", (itm_id,))
-                            sisa_bayar -= itm_amt
-                        elif sisa_bayar > 0:
-                            sisa_item_baru = itm_amt - sisa_bayar
-                            c.execute("UPDATE receivables_items SET amount = ?, paid_status = 'Belum Lunas' WHERE id = ?", (sisa_item_baru, itm_id))
-                            sisa_bayar = 0.0
-                            break
-                        else:
-                            break
+                            sisa_bayar = actual_pay_amount
+                            for itm in selected_items_to_pay:
+                                itm_id = itm['id']
+                                itm_amt = float(itm['amount'])
+                                
+                                if sisa_bayar >= itm_amt:
+                                    conn.execute(text("UPDATE receivables_items SET paid_status = 'Lunas' WHERE id = :iid"), {"iid": itm_id})
+                                    sisa_bayar -= itm_amt
+                                elif sisa_bayar > 0:
+                                    sisa_item_baru = itm_amt - sisa_bayar
+                                    conn.execute(text("UPDATE receivables_items SET amount = :sisa, paid_status = 'Belum Lunas' WHERE id = :iid"), {"sisa": sisa_item_baru, "iid": itm_id})
+                                    sisa_bayar = 0.0
+                                    break
+                                else:
+                                    break
 
-                    c.execute("SELECT SUM(amount) FROM receivables_items WHERE debt_id = ? AND paid_status = 'Belum Lunas'", (debt_id,))
-                    res_sisa = c.fetchone()[0]
-                    sisa_db_baru = float(res_sisa or 0.0)
-                    
-                    new_paid_total = float(debt_info['paid_amount'] or 0.0) + actual_pay_amount
-                    new_status = "Lunas" if sisa_db_baru <= 0 else "Belum Lunas"
+                            res_sisa = conn.execute(text("SELECT SUM(amount) FROM receivables_items WHERE debt_id = :did AND paid_status = 'Belum Lunas'"), {"did": debt_id}).fetchone()
+                            sisa_db_baru = float(res_sisa[0] or 0.0) if res_sisa else 0.0
+                            
+                            new_paid_total = float(debt_info.get('paid_amount', 0) or 0.0) + actual_pay_amount
+                            new_status = "Lunas" if sisa_db_baru <= 0 else "Belum Lunas"
 
-                    c.execute("""
-                        UPDATE receivables 
-                        SET paid_amount = ?, remaining_debt = ?, status = ?
-                        WHERE id = ?
-                    """, (new_paid_total, sisa_db_baru, new_status, debt_id))
+                            conn.execute(text("""
+                                UPDATE receivables 
+                                SET paid_amount = :pamt, remaining_debt = :remdb, status = :st
+                                WHERE id = :did
+                            """), {
+                                "pamt": new_paid_total,
+                                "remdb": sisa_db_baru,
+                                "st": new_status,
+                                "did": debt_id
+                            })
 
-                    conn.commit()
                     st.success("✓ Pembayaran piutang berhasil dicatat dan masuk ke laporan kasir!")
                     st.rerun()
                 except Exception as e:
@@ -157,28 +171,27 @@ def bayar_piutang_dialog(debt_id, patient_name):
     if st.button("Tutup Jendela", key=f"close_pay_{debt_id}", use_container_width=True):
         st.rerun()
 
-    conn.close()
-
 # =========================================================
 # MODAL DETAIL PIUTANG (DENGAN RIWAYAT PEMBAYARAN)
 # =========================================================
 @st.dialog("🔍 Detail Rincian Piutang & Riwayat", width="large")
 def detail_piutang_dialog(debt_id, patient_name):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM receivables WHERE id = ?", (debt_id,))
-    debt = c.fetchone()
-    c.execute("SELECT * FROM receivables_items WHERE debt_id = ?", (debt_id,))
-    items = c.fetchall()
-    
-    # Ambil riwayat pembayaran
-    c.execute("SELECT * FROM receivables_payments WHERE debt_id = ? ORDER BY id DESC", (debt_id,))
-    history_pay = c.fetchall()
-    conn.close()
+    with get_db() as conn:
+        res_debt = conn.execute(text("SELECT * FROM receivables WHERE id = :did"), {"did": debt_id})
+        d_row = res_debt.fetchone()
+        debt = dict(zip(list(res_debt.keys()), d_row)) if d_row else {}
+
+        res_items = conn.execute(text("SELECT * FROM receivables_items WHERE debt_id = :did"), {"did": debt_id})
+        i_rows = res_items.fetchall()
+        items = [dict(zip(list(res_items.keys()), r)) for r in i_rows]
+        
+        res_pay = conn.execute(text("SELECT * FROM receivables_payments WHERE debt_id = :did ORDER BY id DESC"), {"did": debt_id})
+        p_rows = res_pay.fetchall()
+        history_pay = [dict(zip(list(res_pay.keys()), r)) for r in p_rows]
 
     st.markdown(f"#### Rincian Tagihan Pasien: **{patient_name}**")
-    st.markdown(f"No. Ref: **{debt['receipt_no']}** | Jatuh Tempo: **{debt['due_date']}** | Status: **{debt['status']}**")
-    st.markdown(f"Total Tagihan: **{format_rupiah(debt['total_bill'])}** | Sisa: <strong style='color:#EF4444;'>{format_rupiah(debt['remaining_debt'])}</strong>", unsafe_allow_html=True)
+    st.markdown(f"No. Ref: **{debt.get('receipt_no', '')}** | Jatuh Tempo: **{debt.get('due_date', '')}** | Status: **{debt.get('status', '')}**")
+    st.markdown(f"Total Tagihan: **{format_rupiah(debt.get('total_bill', 0))}** | Sisa: <strong style='color:#EF4444;'>{format_rupiah(debt.get('remaining_debt', 0))}</strong>", unsafe_allow_html=True)
     st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
 
     if items:
@@ -193,7 +206,7 @@ def detail_piutang_dialog(debt_id, patient_name):
     
     if history_pay:
         for idx, hp in enumerate(history_pay, 1):
-            hp_shift = hp['shift'] if 'shift' in hp.keys() and hp['shift'] else 'Pagi'
+            hp_shift = hp['shift'] if hp.get('shift') else 'Pagi'
             st.markdown(f"""
                 <div style="background:#F8FAFC; border:1px solid #CBD5E1; padding:8px 12px; border-radius:6px; margin-bottom:5px; font-size:12.5px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
@@ -217,21 +230,23 @@ def detail_piutang_dialog(debt_id, patient_name):
 # =========================================================
 @st.dialog("✏️ Edit & Koreksi Riwayat Pembayaran", width="large")
 def edit_piutang_dialog(debt_id):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM receivables WHERE id = ?", (debt_id,))
-    row = c.fetchone()
-    c.execute("SELECT * FROM receivables_payments WHERE debt_id = ? ORDER BY id ASC", (debt_id,))
-    payments = c.fetchall()
-    conn.close()
+    with get_db() as conn:
+        res_row = conn.execute(text("SELECT * FROM receivables WHERE id = :did"), {"did": debt_id})
+        r_fetch = res_row.fetchone()
+        row = dict(zip(list(res_row.keys()), r_fetch)) if r_fetch else {}
 
-    st.markdown(f"Pasien: **{row['patient_name']}** | No. Ref: **{row['receipt_no']}**")
+        res_pay = conn.execute(text("SELECT * FROM receivables_payments WHERE debt_id = :did ORDER BY id ASC"), {"did": debt_id})
+        p_fetches = res_pay.fetchall()
+        p_cols = list(res_pay.keys())
+        payments = [dict(zip(p_cols, p)) for p in p_fetches]
+
+    st.markdown(f"Pasien: **{row.get('patient_name', '')}** | No. Ref: **{row.get('receipt_no', '')}**")
     st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
 
     if payments:
         for idx, p in enumerate(payments, 1):
             pid = p['id']
-            p_shift = p['shift'] if 'shift' in p.keys() and p['shift'] else 'Pagi'
+            p_shift = p['shift'] if p.get('shift') else 'Pagi'
             with st.expander(f"Histori #{idx} | Tgl: {p['pay_date']} | Shift: {p_shift} | Nominal: {format_rupiah(p['amount'])}"):
                 with st.form(f"form_edit_pay_{pid}"):
                     ed_pdate = st.date_input("Tanggal", value=datetime.strptime(p['pay_date'], "%Y-%m-%d").date(), key=f"ed_pdt_{pid}")
@@ -243,29 +258,39 @@ def edit_piutang_dialog(debt_id):
                     ed_pamt = st.number_input("Nominal (Rp)", value=float(p['amount']), step=10000.0, format="%.0f", key=f"ed_pamt_{pid}")
                     
                     if st.form_submit_button("Simpan Koreksi 💾", use_container_width=True):
-                        conn_h = get_db()
-                        c_h = conn_h.cursor()
-                        c_h.execute("""
-                            UPDATE receivables_payments 
-                            SET pay_date = ?, shift = ?, amount = ? 
-                            WHERE id = ?
-                        """, (str(ed_pdate), ed_pshift, ed_pamt, pid))
+                        with get_db() as conn_h:
+                            with conn_h.begin():
+                                conn_h.execute(text("""
+                                    UPDATE receivables_payments 
+                                    SET pay_date = :pdate, shift = :shf, amount = :amt 
+                                    WHERE id = :pid
+                                """), {
+                                    "pdate": str(ed_pdate),
+                                    "shf": ed_pshift,
+                                    "amt": ed_pamt,
+                                    "pid": pid
+                                })
+                                
+                                res_sum = conn_h.execute(text("SELECT SUM(amount) FROM receivables_payments WHERE debt_id = :did"), {"did": debt_id}).fetchone()
+                                tot_paid_real = float(res_sum[0] or 0.0) if res_sum else 0.0
+                                
+                                res_bill = conn_h.execute(text("SELECT total_bill FROM receivables WHERE id = :did"), {"did": debt_id}).fetchone()
+                                tot_bill_val = float(res_bill[0] or 0.0) if res_bill else 0.0
+                                
+                                new_rem = max(0.0, tot_bill_val - tot_paid_real)
+                                new_st = "Lunas" if new_rem <= 0 else "Belum Lunas"
+                                
+                                conn_h.execute(text("""
+                                    UPDATE receivables 
+                                    SET paid_amount = :pamt, remaining_debt = :remdb, status = :st 
+                                    WHERE id = :did
+                                """), {
+                                    "pamt": tot_paid_real,
+                                    "remdb": new_rem,
+                                    "st": new_st,
+                                    "did": debt_id
+                                })
                         
-                        c_h.execute("SELECT SUM(amount) FROM receivables_payments WHERE debt_id = ?", (debt_id,))
-                        tot_paid_real = c_h.fetchone()[0] or 0.0
-                        c_h.execute("SELECT total_bill FROM receivables WHERE id = ?", (debt_id,))
-                        tot_bill_val = c_h.fetchone()[0] or 0.0
-                        new_rem = max(0.0, tot_bill_val - tot_paid_real)
-                        new_st = "Lunas" if new_rem <= 0 else "Belum Lunas"
-                        
-                        c_h.execute("""
-                            UPDATE receivables 
-                            SET paid_amount = ?, remaining_debt = ?, status = ? 
-                            WHERE id = ?
-                        """, (tot_paid_real, new_rem, new_st, debt_id))
-                        
-                        conn_h.commit()
-                        conn_h.close()
                         st.success("Histori pembayaran dan shift berhasil dikoreksi!")
                         st.rerun()
     else:
@@ -281,17 +306,16 @@ def edit_piutang_dialog(debt_id):
 def render_page():
     render_header("📑 Manajemen Piutang Pasien", "Pantau tagihan, pilih item tindakan spesifik untuk dibayar, dan kelola laporan.")
 
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS receivables (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, receipt_no TEXT, patient_id TEXT, patient_name TEXT, 
-        total_bill REAL, paid_amount REAL, remaining_debt REAL, due_date TEXT, status TEXT, notes TEXT, input_by TEXT
-    )""")
-    c.execute("""CREATE TABLE IF NOT EXISTS receivables_items (
-        id INTEGER PRIMARY KEY AUTOINCREMENT, debt_id INTEGER, category_name TEXT, action_name TEXT, 
-        amount REAL, paid_status TEXT, notes TEXT
-    )""")
-    conn.commit()
+    with get_db() as conn:
+        with conn.begin():
+            conn.execute(text("""CREATE TABLE IF NOT EXISTS receivables (
+                id SERIAL PRIMARY KEY, receipt_no TEXT, patient_id TEXT, patient_name TEXT, 
+                total_bill REAL, paid_amount REAL, remaining_debt REAL, due_date TEXT, status TEXT, notes TEXT, input_by TEXT
+            )"""))
+            conn.execute(text("""CREATE TABLE IF NOT EXISTS receivables_items (
+                id SERIAL PRIMARY KEY, debt_id INTEGER, category_name TEXT, action_name TEXT, 
+                amount REAL, paid_status TEXT, notes TEXT
+            )"""))
 
     # CSS Kompak untuk Halaman Piutang
     st.markdown("""
@@ -391,19 +415,20 @@ def render_page():
     with f2: status_filter = st.selectbox("Status Piutang", ["Semua", "Belum Lunas", "Lunas"], key="piu_status_filter", label_visibility="collapsed")
     st.markdown('</div>', unsafe_allow_html=True)
 
-    query = "SELECT * FROM receivables WHERE due_date LIKE ?"
-    params = [date_mask]
+    query = "SELECT * FROM receivables WHERE due_date LIKE :dmask"
+    params = {"dmask": date_mask}
     
     if search_kw.strip():
-        query += " AND (patient_name LIKE ? OR patient_id LIKE ? OR receipt_no LIKE ?)"
-        params.extend([f"%{search_kw.strip()}%", f"%{search_kw.strip()}%", f"%{search_kw.strip()}%"])
+        query += " AND (patient_name LIKE :kw OR patient_id LIKE :kw OR receipt_no LIKE :kw)"
+        params["kw"] = f"%{search_kw.strip()}%"
     if status_filter != "Semua":
-        query += " AND status = ?"
-        params.append(status_filter)
+        query += " AND status = :st"
+        params["st"] = status_filter
         
     query += " ORDER BY id DESC"
-    df_debt = pd.read_sql_query(query, conn, params=params)
-    conn.close()
+    
+    with get_db() as conn:
+        df_debt = pd.read_sql_query(text(query), conn, params=params)
 
     if not df_debt.empty:
         # Header Tabel Kompak

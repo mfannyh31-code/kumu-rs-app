@@ -2,19 +2,22 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 # =========================================================
 # MODAL DETAIL RIWAYAT TRANSAKSI PASIEN
 # =========================================================
 @st.dialog("🔍 Detail Riwayat Saldo & Transaksi", width="large")
 def show_detail_dialog(patient_id, patient_name):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM deposits WHERE patient_id = ? ORDER BY id DESC", (patient_id,))
-    rows = cursor.fetchall()
+    with get_db() as conn:
+        result = conn.execute(
+            text("SELECT * FROM deposits WHERE patient_id = :pid ORDER BY id DESC"), 
+            {"pid": patient_id}
+        )
+        rows = result.fetchall()
+        col_names = list(result.keys())
     
     if rows:
-        col_names = [desc[0].lower() for desc in cursor.description]
         st.markdown(f"<h4 style='color:#0F172A;'>Riwayat Pasien: {patient_name} (RM: {patient_id})</h4>", unsafe_allow_html=True)
         st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
         
@@ -41,7 +44,6 @@ def show_detail_dialog(patient_id, patient_name):
         st.markdown("<br>", unsafe_allow_html=True)
         if st.button("Tutup", key=f"close_det_{patient_id}", use_container_width=True):
             st.rerun()
-    conn.close()
 
 # =========================================================
 # MODAL REFUND / PENGEMBALIAN SISA SALDO
@@ -58,21 +60,21 @@ def refund_dialog(patient_id, patient_name, sisa_saldo):
     rf_notes = st.text_input("Catatan", value="REFUND SISA SALDO")
     
     if st.button("Proses Refund Sekarang 💸", use_container_width=True, type="primary"):
-        conn = get_db()
-        c = conn.cursor()
-        
-        c.execute("PRAGMA table_info(deposits)")
-        cols = [row[1] for row in c.fetchall()]
-        if "shift" not in cols:
-            c.execute("ALTER TABLE deposits ADD COLUMN shift TEXT DEFAULT 'Pagi'")
-
-        c.execute("""
-            INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'USED', ?)
-        """, (patient_id, patient_name, -refund_amt, str(rf_date), rf_shift, rf_method, rf_notes, str(st.session_state.get('user', 'admin')).upper()))
-        
-        conn.commit()
-        conn.close()
+        with get_db() as conn:
+            with conn.begin():
+                conn.execute(text("""
+                    INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
+                    VALUES (:pid, :pname, :amt, :ddate, :shf, :pmeth, :notes, 'USED', :usr)
+                """), {
+                    "pid": patient_id,
+                    "pname": patient_name,
+                    "amt": -refund_amt,
+                    "ddate": str(rf_date),
+                    "shf": rf_shift,
+                    "pmeth": rf_method,
+                    "notes": rf_notes,
+                    "usr": str(st.session_state.get('user', 'admin')).upper()
+                })
         st.success(f"Refund {rf_method} berhasil diproses dan tercatat di laporan kasir!")
         st.rerun()
 
@@ -81,8 +83,12 @@ def refund_dialog(patient_id, patient_name, sisa_saldo):
 # =========================================================
 @st.dialog("✏️ Koreksi Riwayat Deposit Pasien", width="large")
 def show_edit_dialog(patient_id, patient_name):
-    conn = get_db()
-    df_riwayat = pd.read_sql_query("SELECT * FROM deposits WHERE patient_id = ? ORDER BY id DESC", conn, params=[patient_id])
+    with get_db() as conn:
+        df_riwayat = pd.read_sql_query(
+            text("SELECT * FROM deposits WHERE patient_id = :pid ORDER BY id DESC"), 
+            conn, 
+            params={"pid": patient_id}
+        )
     
     st.markdown(f"Pilih transaksi dari riwayat pasien **{patient_name}** (RM: {patient_id}) yang ingin dikoreksi:")
     
@@ -114,27 +120,37 @@ def show_edit_dialog(patient_id, patient_name):
                     new_notes = st.text_area("Catatan", value=str(notes), key=f"not_{dep_id}")
                     
                     if st.form_submit_button(f"Simpan Perubahan #{dep_id} 💾", use_container_width=True):
-                        c = conn.cursor()
-                        c.execute("""
-                            UPDATE deposits 
-                            SET amount = ?, deposit_date = ?, shift = ?, payment_method = ?, notes = ?, input_by = ? 
-                            WHERE id = ?
-                        """, (new_amt, str(new_date), new_shift, new_meth, new_notes, str(st.session_state.get('user', 'admin')).upper(), dep_id))
-                        conn.commit()
-                        conn.close()
+                        with get_db() as conn:
+                            with conn.begin():
+                                conn.execute(text("""
+                                    UPDATE deposits 
+                                    SET amount = :amt, deposit_date = :ddate, shift = :shf, payment_method = :pmeth, notes = :notes, input_by = :usr 
+                                    WHERE id = :did
+                                """), {
+                                    "amt": new_amt,
+                                    "ddate": str(new_date),
+                                    "shf": new_shift,
+                                    "pmeth": new_meth,
+                                    "notes": new_notes,
+                                    "usr": str(st.session_state.get('user', 'admin')).upper(),
+                                    "did": dep_id
+                                })
                         st.success(f"Transaksi ID #{dep_id} berhasil dikoreksi!")
                         st.rerun()
     else:
         st.info("Tidak ada riwayat transaksi ditemukan untuk pasien ini.")
-    conn.close()
 
 # =========================================================
 # MODAL HAPUS PER RIWAYAT / TRANSAKSI
 # =========================================================
 @st.dialog("🗑️ Hapus Riwayat Deposit", width="large")
 def confirm_delete(patient_id, patient_name):
-    conn = get_db()
-    df_riwayat = pd.read_sql_query("SELECT * FROM deposits WHERE patient_id = ? ORDER BY id DESC", conn, params=[patient_id])
+    with get_db() as conn:
+        df_riwayat = pd.read_sql_query(
+            text("SELECT * FROM deposits WHERE patient_id = :pid ORDER BY id DESC"), 
+            conn, 
+            params={"pid": patient_id}
+        )
     
     st.markdown(f"Pilih transaksi dari riwayat pasien **{patient_name}** (RM: {patient_id}) yang ingin dihapus:")
     
@@ -158,21 +174,18 @@ def confirm_delete(patient_id, patient_name):
                 """, unsafe_allow_html=True)
             with cols[1]:
                 if st.button("Hapus", key=f"del_item_{dep_id}", use_container_width=True, type="primary"):
-                    c = conn.cursor()
-                    c.execute("DELETE FROM deposits WHERE id = ?", (dep_id,))
-                    conn.commit()
-                    conn.close()
+                    with get_db() as conn:
+                        with conn.begin():
+                            conn.execute(text("DELETE FROM deposits WHERE id = :did"), {"did": dep_id})
                     st.success(f"Transaksi ID #{dep_id} berhasil dihapus!")
                     st.rerun()
     else:
         st.info("Tidak ada riwayat transaksi ditemukan.")
-    conn.close()
 
 # =========================================================
 # HALAMAN UTAMA DAFTAR DEPOSIT
 # =========================================================
 def render_page():
-    conn = get_db()
     render_header("📋 Daftar & Monitoring Saldo Deposit", "Pantau saldo awal, pemakaian, sisa akhir, dan lakukan pengembalian (refund)")
 
     st.markdown("""
@@ -200,11 +213,12 @@ def render_page():
 
     st.markdown('<div class="custom-card">', unsafe_allow_html=True)
     
-    try:
-        users_df = pd.read_sql_query("SELECT DISTINCT input_by FROM deposits WHERE input_by IS NOT NULL", conn)
-        list_users = ["Semua User"] + [str(u).upper() for u in users_df['input_by'].tolist() if str(u).strip() != ""]
-    except:
-        list_users = ["Semua User"]
+    with get_db() as conn:
+        try:
+            users_df = pd.read_sql_query("SELECT DISTINCT input_by FROM deposits WHERE input_by IS NOT NULL", conn)
+            list_users = ["Semua User"] + [str(u).upper() for u in users_df['input_by'].tolist() if str(u).strip() != ""]
+        except:
+            list_users = ["Semua User"]
     
     # --- KONTROL FILTER WAKTU (HARIAN, BULANAN, TAHUNAN) ---
     st.markdown('<div style="background:#FFFFFF; padding:20px; border-radius:10px; border:1px solid #CBD5E1; margin-bottom:20px;">', unsafe_allow_html=True)
@@ -246,7 +260,12 @@ def render_page():
     with f_user:
         user_filter = st.selectbox("Kasir / User", list_users)
 
-    df_all = pd.read_sql_query("SELECT * FROM deposits WHERE deposit_date LIKE ? ORDER BY id DESC", conn, params=[date_mask])
+    with get_db() as conn:
+        df_all = pd.read_sql_query(
+            text("SELECT * FROM deposits WHERE deposit_date LIKE :dmask ORDER BY id DESC"), 
+            conn, 
+            params={"dmask": date_mask}
+        )
     
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 
@@ -326,4 +345,3 @@ def render_page():
         st.info("Belum ada data uang muka atau deposit yang tercatat pada periode tersebut.")
 
     st.markdown('</div>', unsafe_allow_html=True)
-    conn.close()

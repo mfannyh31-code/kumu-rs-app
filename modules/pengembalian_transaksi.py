@@ -1,8 +1,8 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 def format_angka(val):
     if val is None or pd.isna(val): return "0"
@@ -14,102 +14,105 @@ def format_angka(val):
 # =========================================================
 @st.dialog("📋 Detail Kuitansi Pengembalian", width="large")
 def show_refund_kuitansi_detail_dialog(receipt_no):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM refund_transactions WHERE receipt_no = ?", (str(receipt_no),))
-    row = cursor.fetchone()
-    
-    if row:
-        col_names = [desc[0].lower() for desc in cursor.description]
-        tx = dict(zip(col_names, row))
+    with get_db() as conn:
+        res_tx = conn.execute(text("SELECT * FROM refund_transactions WHERE receipt_no = :rno"), {"rno": str(receipt_no)})
+        row = res_tx.fetchone()
+        col_names = list(res_tx.keys()) if row else []
         
-        st.markdown(f"<div style='font-size:20px; font-weight:800; color:#EF4444; margin-bottom:14px;'>No. Refund #{tx.get('receipt_no', '')}</div>", unsafe_allow_html=True)
-        
-        c1, c2 = st.columns([1, 1])
-        with c1:
-            st.markdown(f"""
-                <div style='font-size:12px; color:#64748B;'>Tanggal Refund:</div>
-                <div style='font-size:14px; font-weight:700; color:#0F172A; margin-bottom:8px;'>{tx.get('receipt_date', '')}</div>
-                <div style='font-size:12px; color:#64748B;'>Shift:</div>
-                <div style='font-size:14px; font-weight:700; color:#0F172A;'>{tx.get('shift', '')}</div>
-            """, unsafe_allow_html=True)
-        with c2:
-            st.markdown(f"""
-                <div style='font-size:12px; color:#64748B;'>Input Oleh:</div>
-                <div style='font-size:14px; font-weight:700; color:#0F172A;'>{str(tx.get('cashier_username', '')).upper()}</div>
-                <div style='font-size:12px; color:#64748B; margin-top:8px;'>Catatan Tambahan:</div>
-                <div style='font-size:14px; font-weight:500; color:#475569;'>{tx.get('notes', '-') or '-'}</div>
-            """, unsafe_allow_html=True)
+        if row:
+            tx = dict(zip(col_names, row))
             
-        st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
-        
-        th1, th2, th3, th4, th5 = st.columns([2.6, 1.2, 1.2, 0.8, 1.4])
-        th1.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>Tindakan Direfund</div>", unsafe_allow_html=True)
-        th2.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>No. Bukti</div>", unsafe_allow_html=True)
-        th3.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>Tarif</div>", unsafe_allow_html=True)
-        th4.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>Jumlah</div>", unsafe_allow_html=True)
-        th5.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px; text-align:right;'>Subtotal</div>", unsafe_allow_html=True)
-        
-        cursor.execute("SELECT action_name, book_no, price, qty, subtotal FROM refund_transaction_items WHERE receipt_no = ?", (str(receipt_no),))
-        items = cursor.fetchall()
-        
-        for itm in items:
-            tr1, tr2, tr3, tr4, tr5 = st.columns([2.6, 1.2, 1.2, 0.8, 1.4])
-            tr1.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'><span style='color:#EF4444;'>⭕</span> {itm[0]}</div>", unsafe_allow_html=True)
-            tr2.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'>{itm[1] or '-'}</div>", unsafe_allow_html=True)
-            tr3.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'>{format_angka(itm[2])}</div>", unsafe_allow_html=True)
-            tr4.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'>{itm[3]}</div>", unsafe_allow_html=True)
-            tr5.markdown(f"<div style='font-size:13.5px; font-weight:800; color:#0F172A; text-align:right; padding:4px 0;'>{format_angka(itm[4])}</div>", unsafe_allow_html=True)
+            st.markdown(f"<div style='font-size:20px; font-weight:800; color:#EF4444; margin-bottom:14px;'>No. Refund #{tx.get('receipt_no', '')}</div>", unsafe_allow_html=True)
             
-        st.markdown("<hr style='margin:16px 0; border:none; border-top:1px solid #F1F5F9;'>", unsafe_allow_html=True)
-        
-        s_col1, s_col2 = st.columns([1.5, 1])
-        with s_col2:
-            st.markdown(f"""
-                <div style="font-size:13px; color:#64748B; text-align:right;">
-                    <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
-                        <span>Total Dikembalikan</span><strong style="color:#EF4444; font-size:14px;">{format_angka(tx.get('total_amount'))}</strong>
-                    </div>
-                    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                        <span>Metode Tunai</span><span style="color:#0F172A; font-weight:600;">{format_angka(tx.get('pay_tunai'))}</span>
-                    </div>
-                    <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
-                        <span>Metode Transfer</span><span style="color:#0F172A; font-weight:600;">{format_angka(tx.get('pay_transfer'))}</span>
-                    </div>
-                </div>
-            """, unsafe_allow_html=True)
+            c1, c2 = st.columns([1, 1])
+            with c1:
+                st.markdown(f"""
+                    <div style='font-size:12px; color:#64748B;'>Tanggal Refund:</div>
+                    <div style='font-size:14px; font-weight:700; color:#0F172A; margin-bottom:8px;'>{tx.get('receipt_date', '')}</div>
+                    <div style='font-size:12px; color:#64748B;'>Shift:</div>
+                    <div style='font-size:14px; font-weight:700; color:#0F172A;'>{tx.get('shift', '')}</div>
+                """, unsafe_allow_html=True)
+            with c2:
+                st.markdown(f"""
+                    <div style='font-size:12px; color:#64748B;'>Input Oleh:</div>
+                    <div style='font-size:14px; font-weight:700; color:#0F172A;'>{str(tx.get('cashier_username', '')).upper()}</div>
+                    <div style='font-size:12px; color:#64748B; margin-top:8px;'>Catatan Tambahan:</div>
+                    <div style='font-size:14px; font-weight:500; color:#475569;'>{tx.get('notes', '-') or '-'}</div>
+                """, unsafe_allow_html=True)
+                
+            st.markdown("<div style='height: 14px;'></div>", unsafe_allow_html=True)
             
-        st.markdown("<br>", unsafe_allow_html=True)
-        if st.button("Close", key="btn_close_rf_dialog", use_container_width=True):
-            st.rerun()
-    conn.close()
+            th1, th2, th3, th4, th5 = st.columns([2.6, 1.2, 1.2, 0.8, 1.4])
+            th1.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>Tindakan Direfund</div>", unsafe_allow_html=True)
+            th2.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>No. Bukti</div>", unsafe_allow_html=True)
+            th3.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>Tarif</div>", unsafe_allow_html=True)
+            th4.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px;'>Jumlah</div>", unsafe_allow_html=True)
+            th5.markdown("<div style='font-size:13px; font-weight:700; color:#64748B; border-bottom:1.5px solid #F1F5F9; padding-bottom:6px; text-align:right;'>Subtotal</div>", unsafe_allow_html=True)
+            
+            items = conn.execute(
+                text("SELECT action_name, book_no, price, qty, subtotal FROM refund_transaction_items WHERE receipt_no = :rno"), 
+                {"rno": str(receipt_no)}
+            ).fetchall()
+            
+            for itm in items:
+                tr1, tr2, tr3, tr4, tr5 = st.columns([2.6, 1.2, 1.2, 0.8, 1.4])
+                tr1.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'><span style='color:#EF4444;'>⭕</span> {itm[0]}</div>", unsafe_allow_html=True)
+                tr2.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'>{itm[1] or '-'}</div>", unsafe_allow_html=True)
+                tr3.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'>{format_angka(itm[2])}</div>", unsafe_allow_html=True)
+                tr4.markdown(f"<div style='font-size:13.5px; color:#0F172A; padding:4px 0;'>{itm[3]}</div>", unsafe_allow_html=True)
+                tr5.markdown(f"<div style='font-size:13.5px; font-weight:800; color:#0F172A; text-align:right; padding:4px 0;'>{format_angka(itm[4])}</div>", unsafe_allow_html=True)
+                
+            st.markdown("<hr style='margin:16px 0; border:none; border-top:1px solid #F1F5F9;'>", unsafe_allow_html=True)
+            
+            s_col1, s_col2 = st.columns([1.5, 1])
+            with s_col2:
+                st.markdown(f"""
+                    <div style="font-size:13px; color:#64748B; text-align:right;">
+                        <div style="display:flex; justify-content:space-between; margin-bottom:6px;">
+                            <span>Total Dikembalikan</span><strong style="color:#EF4444; font-size:14px;">{format_angka(tx.get('total_amount'))}</strong>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                            <span>Metode Tunai</span><span style="color:#0F172A; font-weight:600;">{format_angka(tx.get('pay_tunai'))}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                            <span>Metode Transfer</span><span style="color:#0F172A; font-weight:600;">{format_angka(tx.get('pay_transfer'))}</span>
+                        </div>
+                    </div>
+                """, unsafe_allow_html=True)
+                
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("Close", key="btn_close_rf_dialog", use_container_width=True):
+                st.rerun()
 
 # =========================================================
 # MODAL EDIT REFUND
 # =========================================================
 @st.dialog("✏️ Edit Kuitansi Pengembalian", width="large")
 def show_edit_refund_kuitansi_dialog(receipt_no):
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM refund_transactions WHERE receipt_no = ?", (str(receipt_no),))
-    row = cursor.fetchone()
-    
-    if row:
-        col_names = [desc[0].lower() for desc in cursor.description]
+    with get_db() as conn:
+        res_tx = conn.execute(text("SELECT * FROM refund_transactions WHERE receipt_no = :rno"), {"rno": str(receipt_no)})
+        row = res_tx.fetchone()
+        col_names = list(res_tx.keys()) if row else []
+        
+        if not row:
+            return
+            
         tx = dict(zip(col_names, row))
         
         st.markdown(f"<h4 style='color:#0F172A;'>Edit Pengembalian #{receipt_no}</h4>", unsafe_allow_html=True)
         
         # Ambil data master hirarki untuk pilihan edit tindakan
-        service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
+        service_cats_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
         scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
-        categories_df = pd.read_sql_query("SELECT id, service_category_id, name FROM categories ORDER BY name ASC", conn)
-        actions_df = pd.read_sql_query("SELECT id, category_id, name, price FROM actions ORDER BY name ASC", conn)
+        categories_df = pd.read_sql_query(text("SELECT id, service_category_id, name FROM categories ORDER BY name ASC"), conn)
+        actions_df = pd.read_sql_query(text("SELECT id, category_id, name, price FROM actions ORDER BY name ASC"), conn)
 
         edit_rf_rows_key = f"edit_rf_rows_{receipt_no}"
         if edit_rf_rows_key not in st.session_state:
-            cursor.execute("SELECT action_name, category_name, book_no, price, qty, subtotal FROM refund_transaction_items WHERE receipt_no = ?", (str(receipt_no),))
-            saved_db_items = cursor.fetchall()
+            saved_db_items = conn.execute(
+                text("SELECT action_name, category_name, book_no, price, qty, subtotal FROM refund_transaction_items WHERE receipt_no = :rno"), 
+                {"rno": str(receipt_no)}
+            ).fetchall()
             st.session_state[edit_rf_rows_key] = []
             for idx, itm in enumerate(saved_db_items):
                 cat_row = categories_df[categories_df['name'] == itm[1]]
@@ -255,26 +258,41 @@ def show_edit_refund_kuitansi_dialog(receipt_no):
             if not updated_rf_items_data:
                 st.error("Pilih minimal satu tindakan.")
             else:
-                cursor.execute("""
-                    UPDATE refund_transactions 
-                    SET receipt_date=?, shift=?, total_amount=?, pay_tunai=?, pay_transfer=?, payment_method=?, notes=?
-                    WHERE receipt_no=?
-                """, (str(new_date), new_shf, grand_total_actions, new_tunai, new_trans, new_method, new_note, receipt_no))
-                
-                cursor.execute("DELETE FROM refund_transaction_items WHERE receipt_no = ?", (str(receipt_no),))
-                for itm in updated_rf_items_data:
-                    cursor.execute("""
-                        INSERT INTO refund_transaction_items (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (str(receipt_no), itm['book_no'], itm['category_name'], itm['action_name'], itm['price'], itm['qty'], 0.0, itm['subtotal']))
+                with conn.begin():
+                    conn.execute(text("""
+                        UPDATE refund_transactions 
+                        SET receipt_date = :rdate, shift = :shf, total_amount = :totamt, pay_tunai = :ptun, pay_transfer = :ptf, payment_method = :pmeth, notes = :notes
+                        WHERE receipt_no = :rno
+                    """), {
+                        "rdate": str(new_date),
+                        "shf": new_shf,
+                        "totamt": grand_total_actions,
+                        "ptun": new_tunai,
+                        "ptf": new_trans,
+                        "pmeth": new_method,
+                        "notes": new_note,
+                        "rno": receipt_no
+                    })
+                    
+                    conn.execute(text("DELETE FROM refund_transaction_items WHERE receipt_no = :rno"), {"rno": str(receipt_no)})
+                    for itm in updated_rf_items_data:
+                        conn.execute(text("""
+                            INSERT INTO refund_transaction_items (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
+                            VALUES (:rno, :bk, :cname, :aname, :prc, :qty, 0.0, :sub)
+                        """), {
+                            "rno": str(receipt_no),
+                            "bk": itm['book_no'],
+                            "cname": itm['category_name'],
+                            "aname": itm['action_name'],
+                            "prc": itm['price'],
+                            "qty": itm['qty'],
+                            "sub": itm['subtotal']
+                        })
 
-                conn.commit()
                 if edit_rf_rows_key in st.session_state:
                     del st.session_state[edit_rf_rows_key]
-                conn.close()
                 st.success("Data pengembalian berhasil diupdate!")
                 st.rerun()
-    conn.close()
 
 # =========================================================
 # MODAL HAPUS REFUND
@@ -285,12 +303,10 @@ def confirm_delete_refund_kuitansi_dialog(receipt_no):
     c1, c2 = st.columns(2)
     if c1.button("Batal", use_container_width=True): st.rerun()
     if c2.button("Ya, Hapus", use_container_width=True, type="primary"):
-        conn = get_db()
-        c = conn.cursor()
-        c.execute("DELETE FROM refund_transactions WHERE receipt_no = ?", (receipt_no,))
-        c.execute("DELETE FROM refund_transaction_items WHERE receipt_no = ?", (receipt_no,))
-        conn.commit()
-        conn.close()
+        with get_db() as conn:
+            with conn.begin():
+                conn.execute(text("DELETE FROM refund_transactions WHERE receipt_no = :rno"), {"rno": receipt_no})
+                conn.execute(text("DELETE FROM refund_transaction_items WHERE receipt_no = :rno"), {"rno": receipt_no})
         st.success("Data pengembalian berhasil dihapus!")
         st.rerun()
 
@@ -320,8 +336,6 @@ def render_page():
     """, unsafe_allow_html=True)
 
     render_header("💸 Daftar Laporan Pengembalian", "Kelola dan pantau pengembalian dana transaksi kuitansi maupun manual secara rapi.")
-
-    conn = get_db()
 
     c_top1, c_top2 = st.columns([3, 1])
     with c_top2:
@@ -369,29 +383,29 @@ def render_page():
     tab1, tab2 = st.tabs(["📄 Laporan Pengembalian Kuitansi", "📑 Pengembalian Manual"])
     
     with tab1:
-        try:
-            c_chk = conn.cursor()
-            c_chk.execute("""
-                CREATE TABLE IF NOT EXISTS refund_transactions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    receipt_no TEXT UNIQUE, receipt_date TEXT, input_date TEXT, shift TEXT, 
-                    cashier_username TEXT, total_amount REAL, payment_method TEXT,
-                    pay_tunai REAL, pay_transfer REAL, notes TEXT
-                )
-            """)
-            conn.commit()
+        with get_db() as conn:
+            try:
+                conn.execute(text("""
+                    CREATE TABLE IF NOT EXISTS refund_transactions (
+                        id SERIAL PRIMARY KEY,
+                        receipt_no TEXT UNIQUE, receipt_date TEXT, input_date TEXT, shift TEXT, 
+                        cashier_username TEXT, total_amount REAL, payment_method TEXT,
+                        pay_tunai REAL, pay_transfer REAL, notes TEXT
+                    )
+                """))
+                conn.commit()
 
-            query_rf = "SELECT * FROM refund_transactions WHERE receipt_date LIKE ?"
-            params_rf = [date_mask]
-            if filter_shift != "Semua Shift":
-                query_rf += " AND shift = ?"
-                params_rf.append(filter_shift)
-            if keyword.strip():
-                query_rf += " AND (receipt_no LIKE ? OR cashier_username LIKE ?)"
-                params_rf.extend([f"%{keyword.strip()}%", f"%{keyword.strip()}%"])
-            df_rf = pd.read_sql_query(query_rf, conn, params=params_rf)
-        except:
-            df_rf = pd.DataFrame()
+                query_rf = "SELECT * FROM refund_transactions WHERE receipt_date LIKE :dmask"
+                params_rf = {"dmask": date_mask}
+                if filter_shift != "Semua Shift":
+                    query_rf += " AND shift = :shf"
+                    params_rf["shf"] = filter_shift
+                if keyword.strip():
+                    query_rf += " AND (receipt_no LIKE :kw OR cashier_username LIKE :kw)"
+                    params_rf["kw"] = f"%{keyword.strip()}%"
+                df_rf = pd.read_sql_query(text(query_rf), conn, params=params_rf)
+            except:
+                df_rf = pd.DataFrame()
 
         if not df_rf.empty:
             h1, h2, h3, h4, h5 = st.columns([1.2, 1.2, 1.2, 1.5, 1.0])
@@ -435,15 +449,16 @@ def render_page():
             st.info("Tidak ada laporan pengembalian kuitansi pada periode tersebut.")
 
     with tab2:
-        try:
-            query_man = "SELECT * FROM manual_refunds WHERE refund_date LIKE ?"
-            params_man = [date_mask]
-            if filter_shift != "Semua Shift":
-                query_man += " AND shift = ?"
-                params_man.append(filter_shift)
-            df_manual = pd.read_sql_query(query_man, conn, params=params_man)
-        except:
-            df_manual = pd.DataFrame()
+        with get_db() as conn:
+            try:
+                query_man = "SELECT * FROM manual_refunds WHERE refund_date LIKE :dmask"
+                params_man = {"dmask": date_mask}
+                if filter_shift != "Semua Shift":
+                    query_man += " AND shift = :shf"
+                    params_man["shf"] = filter_shift
+                df_manual = pd.read_sql_query(text(query_man), conn, params=params_man)
+            except:
+                df_manual = pd.DataFrame()
 
         if not df_manual.empty:
             for _, mrow in df_manual.iterrows():
@@ -453,4 +468,3 @@ def render_page():
             st.info("Tidak ada pengembalian manual ditemukan pada periode tersebut.")
 
     st.markdown('</div>', unsafe_allow_html=True)
-    conn.close()

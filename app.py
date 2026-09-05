@@ -1,6 +1,7 @@
 import streamlit as st
 import os
 from db import init_db, get_base64_image, get_db
+from sqlalchemy import text
 
 # --- KONFIGURASI HALAMAN ---
 st.set_page_config(
@@ -110,11 +111,11 @@ if not st.session_state.user:
             login_user = st.text_input("Username")
             login_pass = st.text_input("Password", type="password")
             if st.form_submit_button("Masuk ke Sistem ➜", use_container_width=True):
-                conn_log = get_db()
-                c_log = conn_log.cursor()
-                c_log.execute("SELECT * FROM users WHERE username = ? AND password = ?", (login_user.strip(), login_pass.strip()))
-                logged_in = c_log.fetchone()
-                conn_log.close()
+                with get_db() as conn_log:
+                    logged_in = conn_log.execute(
+                        text("SELECT * FROM users WHERE username = :un AND password = :pw"), 
+                        {"un": login_user.strip(), "pw": login_pass.strip()}
+                    ).mappings().fetchone()
 
                 if logged_in:
                     st.session_state.user = login_user
@@ -140,11 +141,11 @@ with st.sidebar:
     current_un = st.session_state.user
     current_rl = st.session_state.role
     
-    conn_sb = get_db()
-    c_sb = conn_sb.cursor()
-    c_sb.execute("SELECT full_name, photo_path FROM users WHERE username = ?", (current_un,))
-    sb_row = c_sb.fetchone()
-    conn_sb.close()
+    with get_db() as conn_sb:
+        sb_row = conn_sb.execute(
+            text("SELECT full_name, photo_path FROM users WHERE username = :un"), 
+            {"un": current_un}
+        ).mappings().fetchone()
     
     display_name = sb_row['full_name'] if (sb_row and sb_row['full_name']) else current_un
     

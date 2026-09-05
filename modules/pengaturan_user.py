@@ -2,18 +2,21 @@ import streamlit as st
 import pandas as pd
 import os
 from db import get_db, render_header
+from sqlalchemy import text
 
 # --- MODAL DETAIL & EDIT ---
 @st.dialog("📋 Detail & Pengaturan Akun Karyawan", width="large")
 def show_edit_user_dialog(sel_id):
-    conn = get_db()
-    c = conn.cursor()
-    c.execute("SELECT * FROM users WHERE id = ?", (sel_id,))
-    user = c.fetchone()
+    with get_db() as conn:
+        res = conn.execute(text("SELECT * FROM users WHERE id = :sid"), {"sid": sel_id})
+        user_row = res.fetchone()
+        col_names = list(res.keys())
     
-    if not user:
+    if not user_row:
         st.error("Data user tidak ditemukan.")
         return
+
+    user = dict(zip(col_names, user_row))
 
     # Layout Header
     c1, c2 = st.columns([1.5, 2.5])
@@ -63,10 +66,20 @@ def show_edit_user_dialog(sel_id):
                     f.write(e_photo.getbuffer())
                 photo_url_to_save = file_path
 
-            c.execute("UPDATE users SET username=?, full_name=?, password=?, role=?, photo_path=? WHERE id=?",
-                      (e_username.strip(), e_fullname.strip(), e_password.strip(), e_role, photo_url_to_save, sel_id))
-            conn.commit()
-            conn.close()
+            with get_db() as conn:
+                with conn.begin():
+                    conn.execute(text("""
+                        UPDATE users 
+                        SET username = :uname, full_name = :fname, password = :pwd, role = :role, photo_path = :ppath 
+                        WHERE id = :sid
+                    """), {
+                        "uname": e_username.strip(),
+                        "fname": e_fullname.strip(),
+                        "pwd": e_password.strip(),
+                        "role": e_role,
+                        "ppath": photo_url_to_save,
+                        "sid": sel_id
+                    })
             st.success("✓ Perubahan akun berhasil disimpan!")
             st.rerun()
 
@@ -77,31 +90,11 @@ def render_page():
 
     render_header("⚙️ Pengaturan & Manajemen Akun User", "Kelola data akun karyawan, ubah password, dan hak akses dengan kontrol penuh.")
 
-    conn = get_db()
-    c = conn.cursor()
-
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            full_name TEXT,
-            password TEXT,
-            role TEXT,
-            photo_path TEXT
-        )
-    """)
-    conn.commit()
-
-    c.execute("PRAGMA table_info(users)")
-    u_cols = [row[1] for row in c.fetchall()]
-    if "photo_path" not in u_cols:
-        c.execute("ALTER TABLE users ADD COLUMN photo_path TEXT")
-        conn.commit()
-
-    try:
-        users_df = pd.read_sql_query("SELECT * FROM users", conn)
-    except Exception:
-        users_df = pd.DataFrame(columns=['id', 'username', 'full_name', 'password', 'role', 'photo_path'])
+    with get_db() as conn:
+        try:
+            users_df = pd.read_sql_query(text("SELECT * FROM users"), conn)
+        except Exception:
+            users_df = pd.DataFrame(columns=['id', 'username', 'full_name', 'password', 'role', 'photo_path'])
 
     st.markdown("""
         <style>
@@ -198,13 +191,20 @@ def render_page():
                             f.write(a_photo.getbuffer())
 
                     try:
-                        c.execute("INSERT INTO users (username, full_name, password, role, photo_path) VALUES (?, ?, ?, ?, ?)",
-                                  (a_username.strip(), a_fullname.strip(), a_password.strip(), a_role, saved_photo_path))
-                        conn.commit()
+                        with get_db() as conn:
+                            with conn.begin():
+                                conn.execute(text("""
+                                    INSERT INTO users (username, full_name, password, role, photo_path) 
+                                    VALUES (:uname, :fname, :pwd, :role, :ppath)
+                                """), {
+                                    "uname": a_username.strip(),
+                                    "fname": a_fullname.strip(),
+                                    "pwd": a_password.strip(),
+                                    "role": a_role,
+                                    "ppath": saved_photo_path
+                                })
                         st.success(f"✓ Akun karyawan **{a_fullname}** berhasil ditambahkan!")
                         st.rerun()
                     except Exception as e:
                         st.error(f"Gagal menambah user (Username mungkin sudah ada / duplikat): {e}")
         st.markdown('</div>', unsafe_allow_html=True)
-
-    conn.close()

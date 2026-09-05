@@ -1,7 +1,7 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 # =========================================================
 # MODAL EDIT KATEGORI LAYANAN (KEPALA)
@@ -14,15 +14,16 @@ def edit_service_category_dialog(scat_id, current_name):
         submitted = st.form_submit_button("Simpan Perubahan 💾", use_container_width=True)
         if submitted:
             if new_name.strip():
-                conn = get_db()
-                c = conn.cursor()
                 try:
-                    c.execute("UPDATE service_categories SET name = ? WHERE id = ?", (new_name.strip(), scat_id))
-                    conn.commit()
-                    conn.close()
+                    with get_db() as conn:
+                        with conn.begin():
+                            conn.execute(
+                                text("UPDATE service_categories SET name = :sname WHERE id = :sid"),
+                                {"sname": new_name.strip(), "sid": scat_id}
+                            )
                     st.success("Kategori layanan berhasil diubah!")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except Exception:
                     st.error("Nama kategori layanan tersebut sudah ada.")
             else:
                 st.warning("Nama kategori layanan tidak boleh kosong.")
@@ -50,11 +51,9 @@ def delete_service_category_dialog(scat_id, scat_name):
             st.rerun()
     with c2:
         if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_scat_{scat_id}"):
-            conn = get_db()
-            c = conn.cursor()
-            c.execute("DELETE FROM service_categories WHERE id = ?", (scat_id,))
-            conn.commit()
-            conn.close()
+            with get_db() as conn:
+                with conn.begin():
+                    conn.execute(text("DELETE FROM service_categories WHERE id = :sid"), {"sid": scat_id})
             st.success("Kategori layanan berhasil dihapus!")
             st.rerun()
 
@@ -63,9 +62,8 @@ def delete_service_category_dialog(scat_id, scat_name):
 # =========================================================
 @st.dialog("✏️ Edit Kategori Unit", width="small")
 def edit_category_dialog(cat_id, current_name, current_scat_id):
-    conn = get_db()
-    scat_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
-    conn.close()
+    with get_db() as conn:
+        scat_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
     
     scat_list = scat_df['name'].tolist()
     curr_scat_name = scat_df[scat_df['id'] == current_scat_id]['name'].values[0] if current_scat_id in scat_df['id'].values else (scat_list[0] if scat_list else "")
@@ -77,15 +75,16 @@ def edit_category_dialog(cat_id, current_name, current_scat_id):
         if submitted:
             if new_name.strip():
                 new_scat_id = scat_df[scat_df['name'] == sel_scat]['id'].values[0]
-                conn = get_db()
-                c = conn.cursor()
                 try:
-                    c.execute("UPDATE categories SET service_category_id = ?, name = ? WHERE id = ?", (int(new_scat_id), new_name.strip(), cat_id))
-                    conn.commit()
-                    conn.close()
+                    with get_db() as conn:
+                        with conn.begin():
+                            conn.execute(
+                                text("UPDATE categories SET service_category_id = :scatid, name = :cname WHERE id = :cid"),
+                                {"scatid": int(new_scat_id), "cname": new_name.strip(), "cid": cat_id}
+                            )
                     st.success("Kategori unit berhasil diubah!")
                     st.rerun()
-                except sqlite3.IntegrityError:
+                except Exception:
                     st.error("Nama kategori unit tersebut sudah ada.")
             else:
                 st.warning("Nama kategori tidak boleh kosong.")
@@ -113,11 +112,9 @@ def delete_category_dialog(cat_id, cat_name):
             st.rerun()
     with c2:
         if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_cat_{cat_id}"):
-            conn = get_db()
-            c = conn.cursor()
-            c.execute("DELETE FROM categories WHERE id = ?", (cat_id,))
-            conn.commit()
-            conn.close()
+            with get_db() as conn:
+                with conn.begin():
+                    conn.execute(text("DELETE FROM categories WHERE id = :cid"), {"cid": cat_id})
             st.success("Kategori unit berhasil dihapus!")
             st.rerun()
 
@@ -126,9 +123,8 @@ def delete_category_dialog(cat_id, cat_name):
 # =========================================================
 @st.dialog("✏️ Edit Tindakan & Tarif", width="medium")
 def edit_action_dialog(act_id, current_cat_id, current_name, current_price):
-    conn = get_db()
-    all_cat_df = pd.read_sql_query("SELECT id, name FROM categories ORDER BY name ASC", conn)
-    conn.close()
+    with get_db() as conn:
+        all_cat_df = pd.read_sql_query(text("SELECT id, name FROM categories ORDER BY name ASC"), conn)
     
     cats_list = all_cat_df['name'].tolist()
     curr_cat_name = all_cat_df[all_cat_df['id'] == current_cat_id]['name'].values[0] if current_cat_id in all_cat_df['id'].values else (cats_list[0] if cats_list else "")
@@ -140,13 +136,14 @@ def edit_action_dialog(act_id, current_cat_id, current_name, current_price):
         
         submitted = st.form_submit_button("Simpan Perubahan 💾", use_container_width=True)
         if submitted:
-            if ed_name.strip() and ed_price > 0:
+            if ed_name.strip() and ed_price >= 0:
                 new_cat_id = all_cat_df[all_cat_df['name'] == sel_cat]['id'].values[0]
-                conn = get_db()
-                c = conn.cursor()
-                c.execute("UPDATE actions SET category_id = ?, name = ?, price = ? WHERE id = ?", (int(new_cat_id), ed_name.strip(), ed_price, act_id))
-                conn.commit()
-                conn.close()
+                with get_db() as conn:
+                    with conn.begin():
+                        conn.execute(
+                            text("UPDATE actions SET category_id = :catid, name = :aname, price = :price WHERE id = :aid"),
+                            {"catid": int(new_cat_id), "aname": ed_name.strip(), "price": ed_price, "aid": act_id}
+                        )
                 st.success("Tindakan berhasil diupdate!")
                 st.rerun()
             else:
@@ -175,11 +172,9 @@ def delete_action_dialog(act_id, act_name):
             st.rerun()
     with c2:
         if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_act_{act_id}"):
-            conn = get_db()
-            c = conn.cursor()
-            c.execute("DELETE FROM actions WHERE id = ?", (act_id,))
-            conn.commit()
-            conn.close()
+            with get_db() as conn:
+                with conn.begin():
+                    conn.execute(text("DELETE FROM actions WHERE id = :aid"), {"aid": act_id})
             st.success("Tindakan berhasil dihapus!")
             st.rerun()
 
@@ -187,7 +182,6 @@ def delete_action_dialog(act_id, act_name):
 # HALAMAN UTAMA MASTER DATA
 # =========================================================
 def render_page():
-    conn = get_db()
     render_header("⚙️ Kelola Master Data Layanan", "Penambahan, pencarian, dan pengaturan kategori layanan, kategori unit, serta tarif tindakan")
 
     st.markdown("""
@@ -260,14 +254,16 @@ def render_page():
         with c_form2:
             if st.button("Simpan ➕", use_container_width=True, type="primary", key="btn_save_scat"):
                 if new_scat_name.strip():
-                    c = conn.cursor()
                     try:
-                        c.execute("INSERT INTO service_categories (name) VALUES (?)", (new_scat_name.strip(),))
-                        conn.commit()
-                        conn.close()
+                        with get_db() as conn:
+                            with conn.begin():
+                                conn.execute(
+                                    text("INSERT INTO service_categories (name) VALUES (:sname)"),
+                                    {"sname": new_scat_name.strip()}
+                                )
                         st.success(f"Kategori layanan '{new_scat_name.strip()}' ditambahkan!")
                         st.rerun()
-                    except sqlite3.IntegrityError:
+                    except Exception:
                         st.error("Kategori layanan tersebut sudah terdaftar.")
                 else:
                     st.warning("Nama tidak boleh kosong.")
@@ -280,13 +276,14 @@ def render_page():
         st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
         query_scat = "SELECT id, name FROM service_categories"
-        params_scat = []
+        params_scat = {}
         if search_scat_kw.strip():
-            query_scat += " WHERE name LIKE ?"
-            params_scat.append(f"%{search_scat_kw.strip()}%")
+            query_scat += " WHERE name LIKE :kw"
+            params_scat["kw"] = f"%{search_scat_kw.strip()}%"
         query_scat += " ORDER BY name ASC"
         
-        scat_df = pd.read_sql_query(query_scat, conn, params=params_scat)
+        with get_db() as conn:
+            scat_df = pd.read_sql_query(text(query_scat), conn, params=params_scat)
         
         if not scat_df.empty:
             st.markdown("""
@@ -331,7 +328,8 @@ def render_page():
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
         st.markdown("<div class='master-box-title'>Tambah Kategori Unit Baru</div>", unsafe_allow_html=True)
         
-        scat_opt_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
+        with get_db() as conn:
+            scat_opt_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
         
         if not scat_opt_df.empty:
             c_form1, c_form2, c_form3 = st.columns([2, 2.5, 1])
@@ -343,14 +341,16 @@ def render_page():
                 if st.button("Simpan ➕", use_container_width=True, type="primary", key="btn_save_cat"):
                     if new_cat_name.strip():
                         parent_scat_id = scat_opt_df[scat_opt_df['name'] == parent_scat_name]['id'].values[0]
-                        c = conn.cursor()
                         try:
-                            c.execute("INSERT INTO categories (service_category_id, name) VALUES (?, ?)", (int(parent_scat_id), new_cat_name.strip()))
-                            conn.commit()
-                            conn.close()
+                            with get_db() as conn:
+                                with conn.begin():
+                                    conn.execute(
+                                        text("INSERT INTO categories (service_category_id, name) VALUES (:scatid, :cname)"),
+                                        {"scatid": int(parent_scat_id), "cname": new_cat_name.strip()}
+                                    )
                             st.success(f"Unit '{new_cat_name.strip()}' ditambahkan!")
                             st.rerun()
-                        except sqlite3.IntegrityError:
+                        except Exception:
                             st.error("Kategori unit tersebut sudah ada.")
                     else:
                         st.warning("Nama tidak boleh kosong.")
@@ -370,13 +370,14 @@ def render_page():
             LEFT JOIN service_categories s ON c.service_category_id = s.id
             WHERE 1=1
         """
-        params_cat = []
+        params_cat = {}
         if search_cat_kw.strip():
-            query_cat += " AND c.name LIKE ?"
-            params_cat.append(f"%{search_cat_kw.strip()}%")
+            query_cat += " AND c.name LIKE :kw"
+            params_cat["kw"] = f"%{search_cat_kw.strip()}%"
         query_cat += " ORDER BY s.name ASC, c.name ASC"
         
-        cats_df = pd.read_sql_query(query_cat, conn, params=params_cat)
+        with get_db() as conn:
+            cats_df = pd.read_sql_query(text(query_cat), conn, params=params_cat)
         
         if not cats_df.empty:
             st.markdown("""
@@ -422,7 +423,9 @@ def render_page():
     with tab_act:
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
         st.markdown("<div class='master-box-title'>Tambah Tindakan & Tarif Baru</div>", unsafe_allow_html=True)
-        all_cat_df = pd.read_sql_query("SELECT id, name FROM categories ORDER BY name ASC", conn)
+        
+        with get_db() as conn:
+            all_cat_df = pd.read_sql_query(text("SELECT id, name FROM categories ORDER BY name ASC"), conn)
         
         if not all_cat_df.empty:
             ac1, ac2, ac3, ac4 = st.columns([1.5, 2.2, 1.2, 0.8])
@@ -434,12 +437,15 @@ def render_page():
                 act_price = st.number_input("Tarif", min_value=0.0, step=10000.0, format="%.0f", key="input_new_act_price", label_visibility="collapsed")
             with ac4:
                 if st.button("Simpan ➕", use_container_width=True, type="primary", key="btn_save_act"):
-                    if act_name.strip() and act_price > 0:
+                    # Diubah dari act_price > 0 menjadi act_price >= 0 agar tarif 0 bisa disimpan
+                    if act_name.strip() and act_price >= 0:
                         c_id = all_cat_df[all_cat_df['name'] == target_cat]['id'].values[0]
-                        c = conn.cursor()
-                        c.execute("INSERT INTO actions (category_id, name, price) VALUES (?, ?, ?)", (int(c_id), act_name.strip(), act_price))
-                        conn.commit()
-                        conn.close()
+                        with get_db() as conn:
+                            with conn.begin():
+                                conn.execute(
+                                    text("INSERT INTO actions (category_id, name, price) VALUES (:cid, :aname, :price)"),
+                                    {"cid": int(c_id), "aname": act_name.strip(), "price": act_price}
+                                )
                         st.success("Disimpan!")
                         st.rerun()
                     else:
@@ -466,16 +472,18 @@ def render_page():
             JOIN categories c ON a.category_id = c.id
             WHERE 1=1
         """
-        params_acts = []
+        params_acts = {}
         if search_act_kw.strip():
-            query_acts += " AND a.name LIKE ?"
-            params_acts.append(f"%{search_act_kw.strip()}%")
+            query_acts += " AND a.name LIKE :kw"
+            params_acts["kw"] = f"%{search_act_kw.strip()}%"
         if selected_cat_filter != "Semua Kategori Unit":
-            query_acts += " AND c.name = ?"
-            params_acts.append(selected_cat_filter)
+            query_acts += " AND c.name = :cname"
+            params_acts["cname"] = selected_cat_filter
             
         query_acts += " ORDER BY c.name ASC, a.name ASC"
-        acts_df = pd.read_sql_query(query_acts, conn, params=params_acts)
+        
+        with get_db() as conn:
+            acts_df = pd.read_sql_query(text(query_acts), conn, params=params_acts)
         
         if not acts_df.empty:
             st.markdown("""
@@ -517,5 +525,3 @@ def render_page():
         else:
             st.info("Tidak ada data tindakan ditemukan.")
         st.markdown('</div>', unsafe_allow_html=True)
-
-    conn.close()

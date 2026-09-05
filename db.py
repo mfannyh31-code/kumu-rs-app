@@ -1,154 +1,142 @@
-import sqlite3
-import streamlit as st
-import base64
 import os
+import base64
+import streamlit as st
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import sessionmaker
 
-DB_FILE = "hospital_billing.db"
+# Mengambil connection string dari st.secrets atau environment variable
+DATABASE_URL = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL"))
+
+if not DATABASE_URL:
+    st.error("DATABASE_URL belum dikonfigurasi! Harap masukkan connection string Supabase ke Streamlit Secrets.")
+    st.stop()
+
+# Membuat koneksi engine ke PostgreSQL Supabase
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
-    conn = sqlite3.connect(DB_FILE)
-    conn.row_factory = sqlite3.Row
-    return conn
+    """
+    Mengembalikan koneksi database SQLAlchemy untuk digunakan dalam context manager 'with'.
+    """
+    return engine.connect()
 
 def init_db():
-    conn = get_db()
-    c = conn.cursor()
-    
-    # 1. Buat Tabel Users
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            full_name TEXT,
-            password TEXT,
-            role TEXT,
-            photo_path TEXT
-        )
-    """)
-    
-    # Masukkan akun default (mfh, santy, fanny) ke database jika belum ada
-    default_users = [
-        ("mfh", "Super Admin (MFH)", "111", "Super Admin"),
-        ("santy", "Santy", "111", "Bendahara"),
-        ("fanny", "Fanny Hidayatullah", "111", "Kasir")
-    ]
-    
-    for un, fn, pw, rl in default_users:
-        c.execute("SELECT id FROM users WHERE username = ?", (un,))
-        if not c.fetchone():
-            c.execute("INSERT INTO users (username, full_name, password, role, photo_path) VALUES (?, ?, ?, ?, ?)", (un, fn, pw, rl, ""))
+    """
+    Membuat tabel-tabel yang diperlukan di Supabase PostgreSQL 
+    jika belum ada, serta memasukkan akun default.
+    """
+    with engine.begin() as conn:
+        # 1. Buat Tabel Users
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE,
+                full_name TEXT,
+                password TEXT,
+                role TEXT,
+                photo_path TEXT
+            )
+        """))
+        
+        # Masukkan akun default (mfh, santy, fanny) ke database jika belum ada
+        default_users = [
+            ("mfh", "Super Admin (MFH)", "111", "Super Admin"),
+            ("santy", "Santy", "111", "Bendahara"),
+            ("fanny", "Fanny Hidayatullah", "111", "Kasir")
+        ]
+        
+        for un, fn, pw, rl in default_users:
+            res = conn.execute(text("SELECT id FROM users WHERE username = :un"), {"un": un}).fetchone()
+            if not res:
+                conn.execute(text("""
+                    INSERT INTO users (username, full_name, password, role, photo_path) 
+                    VALUES (:un, :fn, :pw, :rl, '')
+                """), {"un": un, "fn": fn, "pw": pw, "rl": rl})
 
-    # 2. Tabel Master Kategori Layanan (Kepala / Parent)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS service_categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE
-        )
-    """)
+        # 2. Tabel Master Kategori Layanan (Kepala / Parent)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS service_categories (
+                id SERIAL PRIMARY KEY,
+                name TEXT UNIQUE
+            )
+        """))
 
-    # 3. Tabel Kategori Unit (Menengah, dengan relasi ke service_categories)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS categories (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            service_category_id INTEGER,
-            name TEXT UNIQUE,
-            FOREIGN KEY (service_category_id) REFERENCES service_categories(id)
-        )
-    """)
+        # 3. Tabel Kategori Unit (Menengah, dengan relasi ke service_categories)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS categories (
+                id SERIAL PRIMARY KEY,
+                service_category_id INTEGER,
+                name TEXT UNIQUE,
+                FOREIGN KEY (service_category_id) REFERENCES service_categories(id)
+            )
+        """))
 
-    # 4. Tabel Actions (Tindakan & Tarif)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS actions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            category_id INTEGER,
-            name TEXT,
-            price REAL,
-            FOREIGN KEY (category_id) REFERENCES categories(id)
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            receipt_no TEXT UNIQUE,
-            receipt_date TEXT,
-            input_date TEXT,
-            shift TEXT,
-            cashier_username TEXT,
-            total_actions_amount REAL,
-            final_amount REAL,
-            payment_method TEXT,
-            pay_tunai REAL DEFAULT 0,
-            pay_transfer REAL DEFAULT 0,
-            pay_edc REAL DEFAULT 0,
-            pay_qris REAL DEFAULT 0,
-            pay_va REAL DEFAULT 0,
-            pay_deposit REAL DEFAULT 0,
-            pay_pengembalian REAL DEFAULT 0,
-            pay_pengakuan_bendahara REAL DEFAULT 0,
-            pay_pengembalian_notes TEXT
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS transaction_items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            receipt_no TEXT,
-            book_no TEXT,
-            category_name TEXT,
-            action_name TEXT,
-            price REAL,
-            qty INTEGER,
-            discount REAL,
-            subtotal REAL
-        )
-    """)
-    c.execute("""
-        CREATE TABLE IF NOT EXISTS deposits (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            patient_id TEXT,
-            patient_name TEXT,
-            amount REAL,
-            deposit_date TEXT,
-            shift TEXT,
-            payment_method TEXT,
-            notes TEXT,
-            status TEXT,
-            input_by TEXT
-        )
-    """)
+        # 4. Tabel Actions (Tindakan & Tarif)
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS actions (
+                id SERIAL PRIMARY KEY,
+                category_id INTEGER,
+                name TEXT,
+                price REAL,
+                FOREIGN KEY (category_id) REFERENCES categories(id)
+            )
+        """))
 
-    # --- MIGRASI OTOMATIS: Jaga-jaga jika tabel sudah ada tapi kurang kolom ---
-    c.execute("PRAGMA table_info(transactions)")
-    existing_columns_trx = [col[1] for col in c.fetchall()]
-    columns_to_check_trx = {
-        "pay_tunai": "REAL DEFAULT 0",
-        "pay_transfer": "REAL DEFAULT 0",
-        "pay_edc": "REAL DEFAULT 0",
-        "pay_qris": "REAL DEFAULT 0",
-        "pay_va": "REAL DEFAULT 0",
-        "pay_deposit": "REAL DEFAULT 0",
-        "pay_pengembalian": "REAL DEFAULT 0",
-        "pay_pengakuan_bendahara": "REAL DEFAULT 0",
-        "pay_pengembalian_notes": "TEXT"
-    }
+        # 5. Tabel Transactions
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS transactions (
+                id SERIAL PRIMARY KEY,
+                receipt_no TEXT UNIQUE,
+                receipt_date TEXT,
+                input_date TEXT,
+                shift TEXT,
+                cashier_username TEXT,
+                total_actions_amount REAL,
+                final_amount REAL,
+                payment_method TEXT,
+                pay_tunai REAL DEFAULT 0,
+                pay_transfer REAL DEFAULT 0,
+                pay_edc REAL DEFAULT 0,
+                pay_qris REAL DEFAULT 0,
+                pay_va REAL DEFAULT 0,
+                pay_deposit REAL DEFAULT 0,
+                pay_pengembalian REAL DEFAULT 0,
+                pay_pengakuan_bendahara REAL DEFAULT 0,
+                pay_pengembalian_notes TEXT
+            )
+        """))
 
-    for col_name, col_type in columns_to_check_trx.items():
-        if col_name not in existing_columns_trx:
-            try:
-                c.execute(f"ALTER TABLE transactions ADD COLUMN {col_name} {col_type}")
-            except Exception:
-                pass
+        # 6. Tabel Transaction Items
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS transaction_items (
+                id SERIAL PRIMARY KEY,
+                receipt_no TEXT,
+                book_no TEXT,
+                category_name TEXT,
+                action_name TEXT,
+                price REAL,
+                qty INTEGER,
+                discount REAL,
+                subtotal REAL
+            )
+        """))
 
-    # Migrasi otomatis untuk tabel categories agar memiliki kolom service_category_id
-    c.execute("PRAGMA table_info(categories)")
-    existing_columns_cat = [col[1] for col in c.fetchall()]
-    if "service_category_id" not in existing_columns_cat:
-        try:
-            c.execute("ALTER TABLE categories ADD COLUMN service_category_id INTEGER")
-        except Exception:
-            pass
-    
-    conn.commit()
-    conn.close()
+        # 7. Tabel Deposits
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS deposits (
+                id SERIAL PRIMARY KEY,
+                patient_id TEXT,
+                patient_name TEXT,
+                amount REAL,
+                deposit_date TEXT,
+                shift TEXT,
+                payment_method TEXT,
+                notes TEXT,
+                status TEXT,
+                input_by TEXT
+            )
+        """))
 
 def format_rupiah(value):
     try:

@@ -1,11 +1,10 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 def render_page():
-    conn = get_db()
     render_header("💳 Input Kuitansi Kasir", "Entri multi-tindakan per kuitansi dengan pemilihan hierarki layanan (Layanan ➔ Unit ➔ Tindakan)")
 
     # Inisialisasi Counter Reset Form
@@ -19,11 +18,12 @@ def render_page():
         st.session_state.next_row_id = 3
 
     # Ambil data master hirarki dari database
-    service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
-    scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
+    with get_db() as conn:
+        service_cats_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
+        scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
 
-    categories_df = pd.read_sql_query("SELECT id, service_category_id, name FROM categories ORDER BY name ASC", conn)
-    actions_df = pd.read_sql_query("SELECT id, category_id, name, price FROM actions ORDER BY name ASC", conn)
+        categories_df = pd.read_sql_query(text("SELECT id, service_category_id, name FROM categories ORDER BY name ASC"), conn)
+        actions_df = pd.read_sql_query(text("SELECT id, category_id, name, price FROM actions ORDER BY name ASC"), conn)
 
     st.markdown('<div class="custom-card">', unsafe_allow_html=True)
 
@@ -161,22 +161,24 @@ def render_page():
     use_deposit = st.checkbox("Gunakan Uang Muka / Deposit Pasien Rawat Inap", key=f"chk_dep_{cnt}")
     patient_rm = ""
     dep_avail = 0.0
+    selected_dep = "-- Pilih Pasien --"
+    dep_mapping = {}
 
     if use_deposit:
-        try:
-            active_deps_df = pd.read_sql_query("""
-                SELECT patient_id, patient_name, SUM(amount) as total_amount 
-                FROM deposits 
-                GROUP BY patient_id, patient_name
-            """, conn)
-            if not active_deps_df.empty:
-                active_deps_df = active_deps_df[active_deps_df['total_amount'] > 0]
-        except Exception:
-            active_deps_df = pd.DataFrame()
+        with get_db() as conn:
+            try:
+                active_deps_df = pd.read_sql_query(text("""
+                    SELECT patient_id, patient_name, SUM(amount) as total_amount 
+                    FROM deposits 
+                    GROUP BY patient_id, patient_name
+                """), conn)
+                if not active_deps_df.empty:
+                    active_deps_df = active_deps_df[active_deps_df['total_amount'] > 0]
+            except Exception:
+                active_deps_df = pd.DataFrame()
 
         if not active_deps_df.empty:
             dep_options = ["-- Pilih Pasien --"]
-            dep_mapping = {}
             for _, r in active_deps_df.iterrows():
                 rm = str(r['patient_id']).strip()
                 name = str(r['patient_name']).strip()
@@ -282,47 +284,70 @@ def render_page():
                 st.error(f"Gagal: Nominal yang diisikan ke Pengakuan Bendahara ({format_rupiah(pay_pengakuan)}) melebihi saldo Uang Muka yang tersedia ({format_rupiah(dep_avail)}).")
             else:
                 try:
-                    c = conn.cursor()
-                    
-                    c.execute("""INSERT INTO transactions 
-                        (receipt_no, receipt_date, input_date, shift, cashier_username, 
-                         total_actions_amount, final_amount, payment_method,
-                         pay_tunai, pay_transfer, pay_edc, pay_qris, pay_va, pay_deposit, pay_pengembalian, pay_pengakuan_bendahara)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (no_urut_kertas.strip(), str(tgl_kuitansi), str(datetime.today().date()), shift_val, st.session_state.get('user', 'admin'), 
-                         grand_total_actions, sisa_tagihan, summary_method_str,
-                         pay_tunai, pay_transfer, pay_edc, pay_qris, pay_va, deposit_claimed, pay_pengembalian, pay_pengakuan))
+                    with get_db() as conn:
+                        with conn.begin():
+                            conn.execute(text("""
+                                INSERT INTO transactions 
+                                (receipt_no, receipt_date, input_date, shift, cashier_username, 
+                                 total_actions_amount, final_amount, payment_method,
+                                 pay_tunai, pay_transfer, pay_edc, pay_qris, pay_va, pay_deposit, pay_pengembalian, pay_pengakuan_bendahara)
+                                VALUES (:rno, :rdate, :idate, :shf, :cuser, :totact, :finamt, :pmeth, :ptun, :ptf, :pedc, :pqris, :pva, :pdep, :pkemb, :ppeng)
+                            """), {
+                                "rno": no_urut_kertas.strip(),
+                                "rdate": str(tgl_kuitansi),
+                                "idate": str(datetime.today().date()),
+                                "shf": shift_val,
+                                "cuser": st.session_state.get('user', 'admin'),
+                                "totact": grand_total_actions,
+                                "finamt": sisa_tagihan,
+                                "pmeth": summary_method_str,
+                                "ptun": pay_tunai,
+                                "ptf": pay_transfer,
+                                "pedc": pay_edc,
+                                "pqris": pay_qris,
+                                "pva": pay_va,
+                                "pdep": deposit_claimed,
+                                "pkemb": pay_pengembalian,
+                                "ppeng": pay_pengakuan
+                            })
 
-                    for itm in items_data:
-                        c.execute("""INSERT INTO transaction_items 
-                            (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (no_urut_kertas.strip(), itm['book_no'], itm['category_name'], itm['action_name'], itm['price'], itm['qty'], itm['discount'], itm['subtotal']))
+                            for itm in items_data:
+                                conn.execute(text("""
+                                    INSERT INTO transaction_items 
+                                    (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
+                                    VALUES (:rno, :bk, :cname, :aname, :prc, :qty, :disc, :sub)
+                                """), {
+                                    "rno": no_urut_kertas.strip(),
+                                    "bk": itm['book_no'],
+                                    "cname": itm['category_name'],
+                                    "aname": itm['action_name'],
+                                    "prc": itm['price'],
+                                    "qty": itm['qty'],
+                                    "disc": itm['discount'],
+                                    "sub": itm['subtotal']
+                                })
 
-                    if deposit_claimed > 0 and patient_rm:
-                        c.execute("""
-                            INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, 'USED', ?)
-                        """, (
-                            str(patient_rm).strip(), 
-                            str(dep_mapping[selected_dep]['name']).strip(), 
-                            -float(deposit_claimed), 
-                            str(tgl_kuitansi), 
-                            shift_val, 
-                            'Kuitansi', 
-                            f"Pemotongan Uang Muka Kuitansi #{no_urut_kertas.strip()}", 
-                            str(st.session_state.get('user', 'admin')).upper()
-                        ))
+                            if deposit_claimed > 0 and patient_rm:
+                                conn.execute(text("""
+                                    INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
+                                    VALUES (:pid, :pname, :amt, :ddate, :shf, :pmeth, :notes, 'USED', :usr)
+                                """), {
+                                    "pid": str(patient_rm).strip(),
+                                    "pname": str(dep_mapping[selected_dep]['name']).strip(),
+                                    "amt": -float(deposit_claimed),
+                                    "ddate": str(tgl_kuitansi),
+                                    "shf": shift_val,
+                                    "pmeth": 'Kuitansi',
+                                    "notes": f"Pemotongan Uang Muka Kuitansi #{no_urut_kertas.strip()}",
+                                    "usr": str(st.session_state.get('user', 'admin')).upper()
+                                })
 
-                    conn.commit()
-                    conn.close()
                     st.success(f"✓ Kuitansi #{no_urut_kertas} berhasil disimpan dan saldo deposit berhasil terpotong!")
 
                     st.session_state.rows_list = [1, 2]
                     st.session_state.form_reset_counter += 1
                     st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("No. Urut Kertas sudah terdaftar di sistem. Gunakan nomor unik.")
+                except Exception as e:
+                    st.error(f"Gagal menyimpan kuitansi. Kemungkinan No. Urut Kertas sudah terdaftar. (Error: {e})")
 
     st.markdown('</div>', unsafe_allow_html=True)
-    conn.close()

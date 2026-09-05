@@ -4,6 +4,7 @@ import io
 import streamlit.components.v1 as components
 from datetime import datetime
 from db import get_db, format_rupiah
+from sqlalchemy import text
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
@@ -157,13 +158,12 @@ def render_page():
         </style>
     """, unsafe_allow_html=True)
 
-    conn = get_db()
-    try:
-        df_users = pd.read_sql_query("SELECT DISTINCT cashier_username FROM transactions WHERE cashier_username IS NOT NULL", conn)
-        list_users = ["Semua Kasir"] + [str(u).upper() for u in df_users['cashier_username'].tolist() if str(u).strip() != ""]
-    except:
-        list_users = ["Semua Kasir"]
-    conn.close()
+    with get_db() as conn:
+        try:
+            df_users = pd.read_sql_query(text("SELECT DISTINCT cashier_username FROM transactions WHERE cashier_username IS NOT NULL"), conn)
+            list_users = ["Semua Kasir"] + [str(u).upper() for u in df_users['cashier_username'].tolist() if str(u).strip() != ""]
+        except:
+            list_users = ["Semua Kasir"]
 
     # --- HEADER ---
     st.markdown('<div class="report-header">Laporan Penerimaan Kasir</div>', unsafe_allow_html=True)
@@ -215,73 +215,70 @@ def render_page():
         d3 = current_date.strftime('%d/%b/%Y') + "%"              
         d4 = current_date.strftime('%d-%b-%Y') + "%"              
         
-        conn = get_db()
-        
-        # 1. Query Transaksi Item dengan Integrasi Hirarki Master Data
-        query_items = """
-            SELECT i.category_name, i.action_name, i.qty, i.subtotal, t.receipt_date, t.cashier_username, t.shift,
-                   COALESCE(sc.name, 'Lainnya') as service_category_name
-            FROM transaction_items i
-            JOIN transactions t ON i.receipt_no = t.receipt_no
-            LEFT JOIN categories c ON i.category_name = c.name
-            LEFT JOIN service_categories sc ON c.service_category_id = sc.id
-            WHERE (t.receipt_date LIKE ? OR t.receipt_date LIKE ? OR t.receipt_date LIKE ? OR t.receipt_date LIKE ?)
-        """
-        params_items = [d1, d2, d3, d4]
-        if current_shift != "Semua Shift":
-            query_items += " AND UPPER(TRIM(t.shift)) = UPPER(TRIM(?))"
-            params_items.append(current_shift)
-        if current_kasir != "Semua Kasir":
-            query_items += " AND UPPER(TRIM(t.cashier_username)) = UPPER(TRIM(?))"
-            params_items.append(current_kasir)
-        df_items = pd.read_sql_query(query_items, conn, params=params_items)
+        with get_db() as conn:
+            # 1. Query Transaksi Item dengan Integrasi Hirarki Master Data
+            query_items = """
+                SELECT i.category_name, i.action_name, i.qty, i.subtotal, t.receipt_date, t.cashier_username, t.shift,
+                       COALESCE(sc.name, 'Lainnya') as service_category_name
+                FROM transaction_items i
+                JOIN transactions t ON i.receipt_no = t.receipt_no
+                LEFT JOIN categories c ON i.category_name = c.name
+                LEFT JOIN service_categories sc ON c.service_category_id = sc.id
+                WHERE (t.receipt_date LIKE :d1 OR t.receipt_date LIKE :d2 OR t.receipt_date LIKE :d3 OR t.receipt_date LIKE :d4)
+            """
+            params_items = {"d1": d1, "d2": d2, "d3": d3, "d4": d4}
+            if current_shift != "Semua Shift":
+                query_items += " AND UPPER(TRIM(t.shift)) = UPPER(TRIM(:shf))"
+                params_items["shf"] = current_shift
+            if current_kasir != "Semua Kasir":
+                query_items += " AND UPPER(TRIM(t.cashier_username)) = UPPER(TRIM(:ksr))"
+                params_items["ksr"] = current_kasir
+            df_items = pd.read_sql_query(text(query_items), conn, params=params_items)
 
-        # 2. Query Transaksi Induk
-        query_tx = """
-            SELECT payment_method, final_amount, pay_tunai, pay_transfer, pay_edc, pay_qris, pay_va, pay_pengakuan_bendahara 
-            FROM transactions 
-            WHERE (receipt_date LIKE ? OR receipt_date LIKE ? OR receipt_date LIKE ? OR receipt_date LIKE ?)
-        """
-        params_tx = [d1, d2, d3, d4]
-        if current_shift != "Semua Shift":
-            query_tx += " AND UPPER(TRIM(shift)) = UPPER(TRIM(?))"
-            params_tx.append(current_shift)
-        if current_kasir != "Semua Kasir":
-            query_tx += " AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(?))"
-            params_tx.append(current_kasir)
-        df_tx = pd.read_sql_query(query_tx, conn, params=params_tx)
+            # 2. Query Transaksi Induk
+            query_tx = """
+                SELECT payment_method, final_amount, pay_tunai, pay_transfer, pay_edc, pay_qris, pay_va, pay_pengakuan_bendahara 
+                FROM transactions 
+                WHERE (receipt_date LIKE :d1 OR receipt_date LIKE :d2 OR receipt_date LIKE :d3 OR receipt_date LIKE :d4)
+            """
+            params_tx = {"d1": d1, "d2": d2, "d3": d3, "d4": d4}
+            if current_shift != "Semua Shift":
+                query_tx += " AND UPPER(TRIM(shift)) = UPPER(TRIM(:shf))"
+                params_tx["shf"] = current_shift
+            if current_kasir != "Semua Kasir":
+                query_tx += " AND UPPER(TRIM(cashier_username)) = UPPER(TRIM(:ksr))"
+                params_tx["ksr"] = current_kasir
+            df_tx = pd.read_sql_query(text(query_tx), conn, params=params_tx)
 
-        # 3. Query Deposit / Uang Muka
-        query_depo = "SELECT amount, payment_method FROM deposits WHERE (deposit_date LIKE ? OR deposit_date LIKE ? OR deposit_date LIKE ? OR deposit_date LIKE ?)"
-        params_depo = [d1, d2, d3, d4]
-        if current_shift != "Semua Shift":
-            query_depo += " AND UPPER(TRIM(shift)) = UPPER(TRIM(?))"
-            params_depo.append(current_shift)
-        if current_kasir != "Semua Kasir":
-            query_depo += " AND UPPER(TRIM(input_by)) = UPPER(TRIM(?))"
-            params_depo.append(current_kasir)
-        df_depo = pd.read_sql_query(query_depo, conn, params=params_depo)
+            # 3. Query Deposit / Uang Muka
+            query_depo = "SELECT amount, payment_method FROM deposits WHERE (deposit_date LIKE :d1 OR deposit_date LIKE :d2 OR deposit_date LIKE :d3 OR deposit_date LIKE :d4)"
+            params_depo = {"d1": d1, "d2": d2, "d3": d3, "d4": d4}
+            if current_shift != "Semua Shift":
+                query_depo += " AND UPPER(TRIM(shift)) = UPPER(TRIM(:shf))"
+                params_depo["shf"] = current_shift
+            if current_kasir != "Semua Kasir":
+                query_depo += " AND UPPER(TRIM(input_by)) = UPPER(TRIM(:ksr))"
+                params_depo["ksr"] = current_kasir
+            df_depo = pd.read_sql_query(text(query_depo), conn, params=params_depo)
 
-        # 4. Query Pembayaran Piutang
-        query_piu = """
-            SELECT r.patient_name as debtor_name, p.amount, p.method, p.shift, p.input_by, p.pay_date 
-            FROM receivables_payments p
-            LEFT JOIN receivables r ON p.debt_id = r.id
-            WHERE (p.pay_date LIKE ? OR p.pay_date LIKE ? OR p.pay_date LIKE ? OR p.pay_date LIKE ?)
-        """
-        params_piu = [d1, d2, d3, d4]
-        if current_shift != "Semua Shift":
-            query_piu += " AND UPPER(TRIM(p.shift)) = UPPER(TRIM(?))"
-            params_piu.append(current_shift)
-        if current_kasir != "Semua Kasir":
-            query_piu += " AND UPPER(TRIM(p.input_by)) = UPPER(TRIM(?))"
-            params_piu.append(current_kasir)
-        try:
-            df_piu = pd.read_sql_query(query_piu, conn, params=params_piu)
-        except:
-            df_piu = pd.DataFrame()
-        
-        conn.close()
+            # 4. Query Pembayaran Piutang
+            query_piu = """
+                SELECT r.patient_name as debtor_name, p.amount, p.method, p.shift, p.input_by, p.pay_date 
+                FROM receivables_payments p
+                LEFT JOIN receivables r ON p.debt_id = r.id
+                WHERE (p.pay_date LIKE :d1 OR p.pay_date LIKE :d2 OR p.pay_date LIKE :d3 OR p.pay_date LIKE :d4)
+            """
+            params_piu = {"d1": d1, "d2": d2, "d3": d3, "d4": d4}
+            if current_shift != "Semua Shift":
+                query_piu += " AND UPPER(TRIM(p.shift)) = UPPER(TRIM(:shf))"
+                params_piu["shf"] = current_shift
+            if current_kasir != "Semua Kasir":
+                query_piu += " AND UPPER(TRIM(p.input_by)) = UPPER(TRIM(:ksr))"
+                params_piu["ksr"] = current_kasir
+            try:
+                df_piu = pd.read_sql_query(text(query_piu), conn, params=params_piu)
+            except:
+                df_piu = pd.DataFrame()
 
         def is_tunai(method_str):
             if not method_str: return False

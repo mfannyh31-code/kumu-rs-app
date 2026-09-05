@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from db import get_db, format_rupiah, render_header
+from sqlalchemy import text
 
 def render_page():
     render_header("➕ Input Piutang Baru", "Catat piutang pasien berdasarkan pemilihan hirarki layanan (Layanan ➔ Unit ➔ Tindakan) atau input manual.")
@@ -15,21 +16,19 @@ def render_page():
     input_mode = st.radio("Pilih Metode Input Piutang", ["Berdasarkan Tindakan & Unit Layanan", "Input Manual Bebas"], horizontal=True)
     st.markdown("---")
 
-    conn = get_db()
-    c = conn.cursor()
+    with get_db() as conn:
+        try:
+            # Ambil data master hirarki dari database
+            service_cats_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
+            scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
 
-    try:
-        # Ambil data master hirarki dari database
-        service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
-        scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
-
-        categories_df = pd.read_sql_query("SELECT id, service_category_id, name FROM categories ORDER BY name ASC", conn)
-        actions_df = pd.read_sql_query("SELECT id, category_id, name, price FROM actions ORDER BY name ASC", conn)
-    except:
-        scats_list = ["Select"]
-        service_cats_df = pd.DataFrame()
-        categories_df = pd.DataFrame()
-        actions_df = pd.DataFrame()
+            categories_df = pd.read_sql_query(text("SELECT id, service_category_id, name FROM categories ORDER BY name ASC"), conn)
+            actions_df = pd.read_sql_query(text("SELECT id, category_id, name, price FROM actions ORDER BY name ASC"), conn)
+        except Exception:
+            scats_list = ["Select"]
+            service_cats_df = pd.DataFrame()
+            categories_df = pd.DataFrame()
+            actions_df = pd.DataFrame()
 
     if 'piu_form_cnt' not in st.session_state: st.session_state.piu_form_cnt = 0
     cnt = st.session_state.piu_form_cnt
@@ -44,13 +43,18 @@ def render_page():
     def update_patient_name():
         rm_val = st.session_state.get(rm_key, "").strip()
         if rm_val:
-            db_c = get_db()
-            res = db_c.cursor().execute("SELECT patient_name FROM deposits WHERE patient_id = ? LIMIT 1", (rm_val,)).fetchone()
-            if not res:
-                res = db_c.cursor().execute("SELECT patient_name FROM receivables WHERE patient_id = ? LIMIT 1", (rm_val,)).fetchone()
-            if res:
-                st.session_state[name_key] = res[0]
-            db_c.close()
+            with get_db() as db_c:
+                res = db_c.execute(
+                    text("SELECT patient_name FROM deposits WHERE patient_id = :pid LIMIT 1"), 
+                    {"pid": rm_val}
+                ).fetchone()
+                if not res:
+                    res = db_c.execute(
+                        text("SELECT patient_name FROM receivables WHERE patient_id = :pid LIMIT 1"), 
+                        {"pid": rm_val}
+                    ).fetchone()
+                if res:
+                    st.session_state[name_key] = res[0]
 
     c1, c2, c3 = st.columns(3)
     with c1: no_ref = st.text_input("No. Kuitansi / Ref *", placeholder="PIU-001")
@@ -159,38 +163,53 @@ def render_page():
             st.error("⚠️ No. Ref, Nama Pasien, dan Total Nominal Piutang wajib diisi dengan benar!")
         else:
             try:
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS receivables (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, receipt_no TEXT, patient_id TEXT, patient_name TEXT, 
-                        total_bill REAL, paid_amount REAL, remaining_debt REAL, due_date TEXT, status TEXT, notes TEXT, input_by TEXT
-                    )
-                """)
-                c.execute("""
-                    CREATE TABLE IF NOT EXISTS receivables_items (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT, debt_id INTEGER, category_name TEXT, action_name TEXT, 
-                        amount REAL, paid_status TEXT, notes TEXT
-                    )
-                """)
-                c.execute("""
-                    INSERT INTO receivables (receipt_no, patient_id, patient_name, total_bill, paid_amount, remaining_debt, due_date, status, notes, input_by)
-                    VALUES (?, ?, ?, ?, 0.0, ?, ?, 'Belum Lunas', ?, ?)
-                """, (no_ref.strip(), norm.strip(), final_nama, total_piutang_baru, total_piutang_baru, str(due_date), catatan_umum, str(st.session_state.get('user', 'ADMIN')).upper()))
-                
-                debt_id = c.lastrowid
-                for itm in items_list:
-                    c.execute("""
-                        INSERT INTO receivables_items (debt_id, category_name, action_name, amount, paid_status, notes)
-                        VALUES (?, ?, ?, ?, 'Belum Lunas', ?)
-                    """, (debt_id, itm['unit'], itm['action'], itm['amount'], itm['notes']))
+                with get_db() as conn:
+                    with conn.begin():
+                        conn.execute(text("""
+                            CREATE TABLE IF NOT EXISTS receivables (
+                                id SERIAL PRIMARY KEY, receipt_no TEXT, patient_id TEXT, patient_name TEXT, 
+                                total_bill REAL, paid_amount REAL, remaining_debt REAL, due_date TEXT, status TEXT, notes TEXT, input_by TEXT
+                            )
+                        """))
+                        conn.execute(text("""
+                            CREATE TABLE IF NOT EXISTS receivables_items (
+                                id SERIAL PRIMARY KEY, debt_id INTEGER, category_name TEXT, action_name TEXT, 
+                                amount REAL, paid_status TEXT, notes TEXT
+                            )
+                        """))
+                        
+                        res_ins = conn.execute(text("""
+                            INSERT INTO receivables (receipt_no, patient_id, patient_name, total_bill, paid_amount, remaining_debt, due_date, status, notes, input_by)
+                            VALUES (:rno, :pid, :pname, :tbill, 0.0, :remdb, :ddate, 'Belum Lunas', :notes, :usr)
+                            RETURNING id
+                        """), {
+                            "rno": no_ref.strip(),
+                            "pid": norm.strip(),
+                            "pname": final_nama,
+                            "tbill": total_piutang_baru,
+                            "remdb": total_piutang_baru,
+                            "ddate": str(due_date),
+                            "notes": catatan_umum,
+                            "usr": str(st.session_state.get('user', 'ADMIN')).upper()
+                        })
+                        debt_id = res_ins.fetchone()[0]
 
-                conn.commit()
-                conn.close()
+                        for itm in items_list:
+                            conn.execute(text("""
+                                INSERT INTO receivables_items (debt_id, category_name, action_name, amount, paid_status, notes)
+                                VALUES (:did, :cname, :aname, :amt, 'Belum Lunas', :notes)
+                            """), {
+                                "did": debt_id,
+                                "cname": itm['unit'],
+                                "aname": itm['action'],
+                                "amt": itm['amount'],
+                                "notes": itm['notes']
+                            })
+
                 st.success("✓ Data piutang berhasil dicatat!")
                 st.session_state.piutang_rows = [1]
                 st.session_state.piu_form_cnt += 1
                 st.session_state.current_menu = "piutang"
                 st.rerun()
             except Exception as e:
-                conn.close()
                 st.error(f"Gagal menyimpan: {e}")
-    conn.close()
