@@ -6,6 +6,23 @@ from PIL import Image
 from sqlalchemy import text
 from db import get_db, render_header
 
+# =========================================================
+# CACHED QUERY UNTUK PERFORMA PENGATURAN USER
+# =========================================================
+@st.cache_data(ttl=30)
+def get_users_data_cached():
+    """
+    Mengambil data seluruh akun pengguna dengan caching agar pemuatan daftar user instan.
+    """
+    conn = get_db()
+    try:
+        users_df = pd.read_sql_query("SELECT * FROM users ORDER BY id ASC", conn)
+    except Exception:
+        users_df = pd.DataFrame(columns=['id', 'username', 'full_name', 'password', 'role', 'photo_path', 'status'])
+    finally:
+        conn.close()
+    return users_df
+
 # --- MODAL DETAIL & EDIT ---
 @st.dialog("📋 Detail & Pengaturan Akun Karyawan", width="large")
 def show_edit_user_dialog(sel_id):
@@ -169,10 +186,10 @@ def render_page():
     except Exception:
         conn.rollback()
 
-    try:
-        users_df = pd.read_sql_query("SELECT * FROM users ORDER BY id ASC", conn)
-    except Exception:
-        users_df = pd.DataFrame(columns=['id', 'username', 'full_name', 'password', 'role', 'photo_path', 'status'])
+    conn.close()
+
+    # Ambil data user menggunakan fungsi cached
+    users_df = get_users_data_cached()
 
     st.markdown("""
         <style>
@@ -254,12 +271,15 @@ def render_page():
                         hide_label = "👁️" if is_hidden else "🔒"
                         if st.button(hide_label, key=f"hide_user_{r['id']}", help="Sembunyikan / Tampilkan", use_container_width=True):
                             new_st = 'ACTIVE' if is_hidden else 'HIDDEN'
+                            conn_action = get_db()
                             try:
-                                conn.execute(text("UPDATE users SET status = :status WHERE id = :id"), {"status": new_st, "id": r['id']})
-                                conn.commit()
+                                conn_action.execute(text("UPDATE users SET status = :status WHERE id = :id"), {"status": new_st, "id": r['id']})
+                                conn_action.commit()
+                                conn_action.close()
                                 st.rerun()
                             except Exception as e:
-                                conn.rollback()
+                                conn_action.rollback()
+                                conn_action.close()
                                 st.error(f"Gagal update status: {e}")
                         st.markdown('</div>', unsafe_allow_html=True)
                     with sub_c2:
@@ -307,8 +327,9 @@ def render_page():
                         b64_encoded = base64.b64encode(buffered.getvalue()).decode("utf-8")
                         saved_photo_path = f"data:image/jpeg;base64,{b64_encoded}"
 
+                    conn_add = get_db()
                     try:
-                        conn.execute(text("""
+                        conn_add.execute(text("""
                             INSERT INTO users (username, full_name, password, role, photo_path, status) 
                             VALUES (:username, :full_name, :password, :role, :photo_path, 'ACTIVE')
                         """), {
@@ -318,12 +339,12 @@ def render_page():
                             "role": a_role,
                             "photo_path": saved_photo_path
                         })
-                        conn.commit()
+                        conn_add.commit()
+                        conn_add.close()
                         st.success(f"✓ Akun karyawan **{a_fullname}** dengan jabatan **{a_role}** berhasil ditambahkan!")
                         st.rerun()
                     except Exception as e:
-                        conn.rollback()
+                        conn_add.rollback()
+                        conn_add.close()
                         st.error(f"Gagal menambah user (Username mungkin sudah ada / duplikat): {e}")
         st.markdown('</div>', unsafe_allow_html=True)
-
-    conn.close()

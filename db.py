@@ -4,14 +4,14 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 
-# Mengambil connection string dari st.secrets atau environment variable
+# Mengambil connection string dari st.secrets atau environment variable[cite: 16]
 DATABASE_URL = st.secrets.get("DATABASE_URL", os.getenv("DATABASE_URL"))
 
 if not DATABASE_URL:
     st.error("DATABASE_URL belum dikonfigurasi! Harap masukkan connection string Supabase ke Streamlit Secrets.")
     st.stop()
 
-# Membuat koneksi engine ke PostgreSQL Supabase (dengan connection pool parameters untuk stabilitas cloud)
+# Membuat koneksi engine ke PostgreSQL Supabase (dengan connection pool parameters untuk stabilitas cloud)[cite: 16]
 engine = create_engine(
     DATABASE_URL,
     pool_size=5,
@@ -152,7 +152,7 @@ def init_db():
 def cached_read_query(query_str):
     """
     Menjalankan kueri baca dengan caching Streamlit (berlaku 10 menit) 
-    agar perpindahan menu antar halaman terasa instan dan tidak membebani Supabase.
+    agar perpindahan menu antar halaman terasa instan dan tidak membebani Supabase.[cite: 16]
     """
     with engine.connect() as conn:
         import pandas as pd
@@ -161,7 +161,7 @@ def cached_read_query(query_str):
 
 def clear_data_cache():
     """
-    Membersihkan cache secara manual jika terjadi penambahan/perubahan data master baru.
+    Membersihkan cache secara manual jika terjadi penambahan/perubahan data master baru.[cite: 16]
     """
     st.cache_data.clear()
 

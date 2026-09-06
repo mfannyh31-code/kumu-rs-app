@@ -1,8 +1,8 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
-from db import get_db, format_rupiah, render_header
+from db import get_db, format_rupiah, render_header, clear_data_cache
+from sqlalchemy import text
 
 def render_page():
     render_header("➕ Input Pengembalian Dana (Refund)", "Catat pengembalian dana dengan pemilihan hierarki layanan (Layanan ➔ Unit ➔ Tindakan).")
@@ -208,30 +208,48 @@ def render_page():
             elif not items_data:
                 st.error("Pilih minimal satu tindakan yang dikembalikan.")
             else:
-                c = conn.cursor()
                 try:
-                    c.execute("""
-                        INSERT INTO refund_transactions 
-                        (receipt_no, receipt_date, input_date, shift, cashier_username, total_amount, payment_method, pay_tunai, pay_transfer, notes)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (no_urut_kertas.strip(), str(tgl_kuitansi), str(datetime.today().date()), shift_val, st.session_state.user, 
-                          grand_total_actions, summary_method_str, pay_tunai, pay_transfer, rf_notes))
+                    with conn.begin():
+                        conn.execute(text("""
+                            INSERT INTO refund_transactions 
+                            (receipt_no, receipt_date, input_date, shift, cashier_username, total_amount, payment_method, pay_tunai, pay_transfer, notes)
+                            VALUES (:rno, :rdate, :idate, :shf, :usr, :tot, :pmeth, :ptun, :ptf, :notes)
+                        """), {
+                            "rno": no_urut_kertas.strip(),
+                            "rdate": str(tgl_kuitansi),
+                            "idate": str(datetime.today().date()),
+                            "shf": shift_val,
+                            "usr": str(st.session_state.get('user', 'admin')),
+                            "tot": grand_total_actions,
+                            "pmeth": summary_method_str,
+                            "ptun": pay_tunai,
+                            "ptf": pay_transfer,
+                            "notes": rf_notes
+                        })
 
-                    for itm in items_data:
-                        c.execute("""
-                            INSERT INTO refund_transaction_items 
-                            (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (no_urut_kertas.strip(), itm['book_no'], itm['category_name'], itm['action_name'], itm['price'], itm['qty'], itm['discount'], itm['subtotal']))
+                        for itm in items_data:
+                            conn.execute(text("""
+                                INSERT INTO refund_transaction_items 
+                                (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
+                                VALUES (:rno, :bk, :cname, :aname, :prc, :qty, :disc, :sub)
+                            """), {
+                                "rno": no_urut_kertas.strip(),
+                                "bk": itm['book_no'],
+                                "cname": itm['category_name'],
+                                "aname": itm['action_name'],
+                                "prc": itm['price'],
+                                "qty": itm['qty'],
+                                "disc": itm['discount'],
+                                "sub": itm['subtotal']
+                            })
                     
-                    conn.commit()
+                    clear_data_cache()
                     st.success(f"✓ Pengembalian kuitansi #{no_urut_kertas} berhasil disimpan!")
                     st.session_state.rf_rows_list = [1]
                     st.session_state.rf_form_reset_cnt += 1
                     st.session_state.current_menu = "pengembalian"
                     st.rerun()
                 except Exception as e:
-                    conn.rollback()
                     st.error(f"Gagal menyimpan pengembalian: {e}")
 
     # ==========================================
@@ -270,17 +288,28 @@ def render_page():
                 st.error("⚠️ Nama penerima dan nominal wajib diisi!")
             else:
                 try:
-                    c = conn.cursor()
-                    c.execute("""
-                        INSERT INTO manual_refunds (refund_date, shift, recipient_name, reference_no, unit_service, action_name, amount, method, notes, created_by)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (str(m_date), m_shift, m_name.strip(), m_rcpt.strip(), m_unit, m_action.strip(), m_amt, m_method, m_notes.strip(), str(st.session_state.get('user', 'admin')).upper()))
-                    conn.commit()
+                    with conn.begin():
+                        conn.execute(text("""
+                            INSERT INTO manual_refunds (refund_date, shift, recipient_name, reference_no, unit_service, action_name, amount, method, notes, created_by)
+                            VALUES (:rdate, :shf, :recip, :refno, :unit, :act, :amt, :meth, :notes, :usr)
+                        """), {
+                            "rdate": str(m_date),
+                            "shf": m_shift,
+                            "recip": m_name.strip(),
+                            "refno": m_rcpt.strip(),
+                            "unit": m_unit,
+                            "act": m_action.strip(),
+                            "amt": m_amt,
+                            "meth": m_method,
+                            "notes": m_notes.strip(),
+                            "usr": str(st.session_state.get('user', 'admin')).upper()
+                        })
+                    
+                    clear_data_cache()
                     st.success("✓ Data pengembalian manual berhasil disimpan!")
                     st.session_state.current_menu = "pengembalian"
                     st.rerun()
                 except Exception as e:
-                    conn.rollback()
                     st.error(f"Gagal menyimpan data: {e}")
                 
     conn.close()

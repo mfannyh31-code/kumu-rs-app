@@ -10,6 +10,39 @@ def format_angka(val):
     except: return "0"
 
 # =========================================================
+# CACHED QUERY UNTUK PERFORMA REFUND
+# =========================================================
+@st.cache_data(ttl=15)
+def get_refund_transactions_cached(query_str, params_tuple):
+    """
+    Mengambil data laporan pengembalian kuitansi dengan caching agar transisi halaman instan.
+    """
+    conn = get_db()
+    try:
+        params = dict(params_tuple)
+        df_rf = pd.read_sql_query(text(query_str), conn, params=params)
+    except Exception:
+        df_rf = pd.DataFrame()
+    finally:
+        conn.close()
+    return df_rf
+
+@st.cache_data(ttl=15)
+def get_manual_refunds_cached(query_str, params_tuple):
+    """
+    Mengambil data laporan pengembalian manual dengan caching.
+    """
+    conn = get_db()
+    try:
+        params = dict(params_tuple)
+        df_manual = pd.read_sql_query(text(query_str), conn, params=params)
+    except Exception:
+        df_manual = pd.DataFrame()
+    finally:
+        conn.close()
+    return df_manual
+
+# =========================================================
 # MODAL DETAIL KUITANSI REFUND
 # =========================================================
 @st.dialog("📋 Detail Kuitansi Pengembalian", width="large")
@@ -383,6 +416,7 @@ def render_page():
     tab1, tab2 = st.tabs(["📄 Laporan Pengembalian Kuitansi", "📑 Pengembalian Manual"])
     
     with tab1:
+        # Inisialisasi tabel jika belum ada
         with get_db() as conn:
             try:
                 conn.execute(text("""
@@ -394,18 +428,20 @@ def render_page():
                     )
                 """))
                 conn.commit()
+            except Exception:
+                pass
 
-                query_rf = "SELECT * FROM refund_transactions WHERE receipt_date LIKE :dmask"
-                params_rf = {"dmask": date_mask}
-                if filter_shift != "Semua Shift":
-                    query_rf += " AND shift = :shf"
-                    params_rf["shf"] = filter_shift
-                if keyword.strip():
-                    query_rf += " AND (receipt_no LIKE :kw OR cashier_username LIKE :kw)"
-                    params_rf["kw"] = f"%{keyword.strip()}%"
-                df_rf = pd.read_sql_query(text(query_rf), conn, params=params_rf)
-            except:
-                df_rf = pd.DataFrame()
+        query_rf = "SELECT * FROM refund_transactions WHERE receipt_date LIKE :dmask"
+        params_rf = {"dmask": date_mask}
+        if filter_shift != "Semua Shift":
+            query_rf += " AND shift = :shf"
+            params_rf["shf"] = filter_shift
+        if keyword.strip():
+            query_rf += " AND (receipt_no LIKE :kw OR cashier_username LIKE :kw)"
+            params_rf["kw"] = f"%{keyword.strip()}%"
+
+        # Panggil data menggunakan fungsi cached
+        df_rf = get_refund_transactions_cached(query_rf, tuple(sorted(params_rf.items())))
 
         if not df_rf.empty:
             h1, h2, h3, h4, h5 = st.columns([1.2, 1.2, 1.2, 1.5, 1.0])
@@ -449,16 +485,14 @@ def render_page():
             st.info("Tidak ada laporan pengembalian kuitansi pada periode tersebut.")
 
     with tab2:
-        with get_db() as conn:
-            try:
-                query_man = "SELECT * FROM manual_refunds WHERE refund_date LIKE :dmask"
-                params_man = {"dmask": date_mask}
-                if filter_shift != "Semua Shift":
-                    query_man += " AND shift = :shf"
-                    params_man["shf"] = filter_shift
-                df_manual = pd.read_sql_query(text(query_man), conn, params=params_man)
-            except:
-                df_manual = pd.DataFrame()
+        query_man = "SELECT * FROM manual_refunds WHERE refund_date LIKE :dmask"
+        params_man = {"dmask": date_mask}
+        if filter_shift != "Semua Shift":
+            query_man += " AND shift = :shf"
+            params_man["shf"] = filter_shift
+            
+        # Panggil data menggunakan fungsi cached
+        df_manual = get_manual_refunds_cached(query_man, tuple(sorted(params_man.items())))
 
         if not df_manual.empty:
             for _, mrow in df_manual.iterrows():

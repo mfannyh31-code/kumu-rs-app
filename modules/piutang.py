@@ -5,6 +5,22 @@ from db import get_db, format_rupiah, render_header
 from sqlalchemy import text
 
 # =========================================================
+# CACHED QUERY UNTUK PERFORMA PIUTANG
+# =========================================================
+@st.cache_data(ttl=10)
+def get_receivables_data(query_str, params_tuple):
+    """
+    Mengambil data piutang dengan caching agar proses filter dan pencarian data instan.
+    """
+    conn = get_db()
+    try:
+        params = dict(params_tuple)
+        df_debt = pd.read_sql_query(text(query_str), conn, params=params)
+    finally:
+        conn.close()
+    return df_debt
+
+# =========================================================
 # MODAL HAPUS BERTAHAP (RIWAYAT DAHULU SEBELUM SEMUA)
 # =========================================================
 @st.dialog("🗑️ Hapus Riwayat & Data Piutang", width="large")
@@ -500,8 +516,8 @@ def render_page():
         
     query += " ORDER BY id DESC"
     
-    with get_db() as conn:
-        df_debt = pd.read_sql_query(text(query), conn, params=params)
+    # Ambil data piutang melalui fungsi cached untuk performa yang lebih cepat
+    df_debt = get_receivables_data(query, tuple(sorted(params.items())))
 
     if not df_debt.empty:
         # Header Tabel Kompak

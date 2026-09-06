@@ -6,11 +6,29 @@ from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 import streamlit.components.v1 as components
 from datetime import datetime, date
 from sqlalchemy import text
-from db import get_db, format_rupiah, render_header
+from db import get_db, format_rupiah, render_header, cached_read_query
 
 def format_angka(val):
     try: return f"{int(float(val)):,}".replace(",", ".")
     except: return "0"
+
+# =========================================================
+# CACHED QUERY UNTUK PERFORMA REKON BENDAHARA
+# =========================================================
+@st.cache_data(ttl=15)
+def get_rekon_data_cached(query_str, params_tuple):
+    """
+    Mengambil data rekon dan monitoring bendahara dengan caching agar proses filter instan.
+    """
+    conn = get_db()
+    try:
+        params = dict(params_tuple)
+        df_res = pd.read_sql_query(text(query_str), conn, params=params)
+    except Exception:
+        df_res = pd.DataFrame()
+    finally:
+        conn.close()
+    return df_res
 
 def render_page():
     render_header("📑 Rekon & Monitoring Data Bendahara", "Analisis pencocokan rekening koran, rekapitulasi unit, tindakan, rentang tanggal kustom, pencocokan selisih bank, dan cetak laporan.")
@@ -31,16 +49,12 @@ def render_page():
         </style>
     """, unsafe_allow_html=True)
 
-    conn = get_db()
-    
     try:
-        # Ambil Kategori Layanan Utama (Service Categories) untuk filter hirarki
-        service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
+        # Ambil Kategori Layanan Utama (Service Categories) untuk filter hirarki secara cached
+        service_cats_df = cached_read_query("SELECT id, name FROM service_categories ORDER BY name ASC")
         scats_dict = dict(zip(service_cats_df['name'], service_cats_df['id']))
         list_service_cats = ["Semua Kategori Layanan"] + list(scats_dict.keys())
     except Exception:
-        try: conn.rollback()
-        except: pass
         scats_dict = {}
         list_service_cats = ["Semua Kategori Layanan"]
 
@@ -92,19 +106,13 @@ def render_page():
     try:
         if selected_service_cat != "Semua Kategori Layanan" and selected_service_cat in scats_dict:
             scat_id = scats_dict[selected_service_cat]
-            categories_df = pd.read_sql_query(
-                "SELECT id, service_category_id, name FROM categories WHERE service_category_id = %s ORDER BY name ASC", 
-                conn, 
-                params=(scat_id,)
-            )
+            categories_df = cached_read_query(f"SELECT id, service_category_id, name FROM categories WHERE service_category_id = {scat_id} ORDER BY name ASC")
         else:
-            categories_df = pd.read_sql_query("SELECT id, service_category_id, name FROM categories ORDER BY name ASC", conn)
+            categories_df = cached_read_query("SELECT id, service_category_id, name FROM categories ORDER BY name ASC")
         
         cats_dict = dict(zip(categories_df['name'], categories_df['id']))
         list_units = ["Semua Unit"] + list(cats_dict.keys())
     except Exception:
-        try: conn.rollback()
-        except: pass
         cats_dict = {}
         list_units = ["Semua Unit"]
 
@@ -115,36 +123,28 @@ def render_page():
     try:
         if selected_unit != "Semua Unit" and selected_unit in cats_dict:
             cat_id = cats_dict[selected_unit]
-            actions_df = pd.read_sql_query(
-                "SELECT name FROM actions WHERE category_id = %s ORDER BY name ASC", 
-                conn, 
-                params=(cat_id,)
-            )
+            actions_df = cached_read_query(f"SELECT name FROM actions WHERE category_id = {cat_id} ORDER BY name ASC")
         elif selected_service_cat != "Semua Kategori Layanan" and selected_service_cat in scats_dict:
             scat_id = scats_dict[selected_service_cat]
-            actions_df = pd.read_sql_query("""
+            actions_df = cached_read_query(f"""
                 SELECT a.name FROM actions a 
                 JOIN categories c ON a.category_id = c.id 
-                WHERE c.service_category_id = %s ORDER BY a.name ASC
-            """, conn, params=(scat_id,))
+                WHERE c.service_category_id = {scat_id} ORDER BY a.name ASC
+            """)
         else:
-            actions_df = pd.read_sql_query("SELECT name FROM actions ORDER BY name ASC", conn)
+            actions_df = cached_read_query("SELECT name FROM actions ORDER BY name ASC")
         
         list_actions = ["Semua Tindakan"] + actions_df['name'].tolist()
     except Exception:
-        try: conn.rollback()
-        except: pass
         list_actions = ["Semua Tindakan"]
 
     with f_u2:
         selected_action = st.selectbox("Filter Tindakan", list_actions)
 
     try:
-        df_users = pd.read_sql_query("SELECT DISTINCT cashier_username FROM transactions WHERE cashier_username IS NOT NULL", conn)
+        df_users = cached_read_query("SELECT DISTINCT cashier_username FROM transactions WHERE cashier_username IS NOT NULL")
         list_users = ["Semua Kasir"] + [str(u).upper() for u in df_users['cashier_username'].tolist() if str(u).strip() != ""]
     except Exception:
-        try: conn.rollback()
-        except: pass
         list_users = ["Semua Kasir"]
 
     with f_u3:
@@ -165,9 +165,9 @@ def render_page():
             JOIN transactions t ON i.receipt_no = t.receipt_no
             LEFT JOIN categories c ON i.category_name = c.name
             LEFT JOIN service_categories sc ON c.service_category_id = sc.id
-            WHERE SUBSTRING(t.receipt_date, 1, 10) BETWEEN %s AND %s
+            WHERE SUBSTRING(t.receipt_date, 1, 10) BETWEEN :d1 AND :d2
         """
-        params_items = [str(start_d), str(end_d)]
+        params_items = {"d1": str(start_d), "d2": str(end_d)}
     else:
         q_items = """
             SELECT i.category_name, i.action_name, i.price, i.qty, i.discount, i.subtotal, t.receipt_date, t.receipt_no, t.cashier_username, t.shift,
@@ -176,81 +176,63 @@ def render_page():
             JOIN transactions t ON i.receipt_no = t.receipt_no
             LEFT JOIN categories c ON i.category_name = c.name
             LEFT JOIN service_categories sc ON c.service_category_id = sc.id
-            WHERE t.receipt_date LIKE %s
+            WHERE t.receipt_date LIKE :dmask
         """
-        params_items = [date_mask_sql]
+        params_items = {"dmask": date_mask_sql}
 
     if selected_service_cat != "Semua Kategori Layanan":
-        q_items += " AND sc.name = %s"
-        params_items.append(selected_service_cat)
+        q_items += " AND sc.name = :scat"
+        params_items["scat"] = selected_service_cat
     if selected_unit != "Semua Unit":
-        q_items += " AND i.category_name = %s"
-        params_items.append(selected_unit)
+        q_items += " AND i.category_name = :unit"
+        params_items["unit"] = selected_unit
     if selected_action != "Semua Tindakan":
-        q_items += " AND i.action_name = %s"
-        params_items.append(selected_action)
+        q_items += " AND i.action_name = :act"
+        params_items["act"] = selected_action
     if selected_kasir_filter != "Semua Kasir":
-        q_items += " AND UPPER(TRIM(t.cashier_username)) = UPPER(TRIM(%s))"
-        params_items.append(selected_kasir_filter)
+        q_items += " AND UPPER(TRIM(t.cashier_username)) = UPPER(TRIM(:ksr))"
+        params_items["ksr"] = selected_kasir_filter
     if selected_shift_filter != "Semua Shift":
-        q_items += " AND UPPER(TRIM(t.shift)) = UPPER(TRIM(%s))"
-        params_items.append(selected_shift_filter)
+        q_items += " AND UPPER(TRIM(t.shift)) = UPPER(TRIM(:shf))"
+        params_items["shf"] = selected_shift_filter
         
-    try:
-        df_items = pd.read_sql_query(q_items, conn, params=tuple(params_items))
-    except Exception:
-        try: conn.rollback()
-        except: pass
-        df_items = pd.DataFrame()
+    df_items = get_rekon_data_cached(q_items, tuple(sorted(params_items.items())))
 
     valid_receipts = df_items['receipt_no'].unique().tolist() if not df_items.empty else []
 
-    try:
-        if date_filter_mode == "range":
-            df_tx = pd.read_sql_query(
-                "SELECT * FROM transactions WHERE SUBSTRING(receipt_date, 1, 10) BETWEEN %s AND %s", 
-                conn, 
-                params=(str(start_d), str(end_d))
-            )
+    if date_filter_mode == "range":
+        q_tx = "SELECT * FROM transactions WHERE SUBSTRING(receipt_date, 1, 10) BETWEEN :d1 AND :d2"
+        params_tx = {"d1": str(start_d), "d2": str(end_d)}
+        df_tx = get_rekon_data_cached(q_tx, tuple(sorted(params_tx.items())))
+    else:
+        if selected_service_cat == "Semua Kategori Layanan" and selected_unit == "Semua Unit" and selected_action == "Semua Tindakan" and selected_kasir_filter == "Semua Kasir" and selected_shift_filter == "Semua Shift":
+            q_tx = "SELECT * FROM transactions WHERE receipt_date LIKE :dmask"
+            params_tx = {"dmask": date_mask_sql}
+            df_tx = get_rekon_data_cached(q_tx, tuple(sorted(params_tx.items())))
         else:
-            if selected_service_cat == "Semua Kategori Layanan" and selected_unit == "Semua Unit" and selected_action == "Semua Tindakan" and selected_kasir_filter == "Semua Kasir" and selected_shift_filter == "Semua Shift":
-                df_tx = pd.read_sql_query("SELECT * FROM transactions WHERE receipt_date LIKE %s", conn, params=(date_mask_sql,))
+            if valid_receipts:
+                # Aman menggunakan cached query dengan konstruksi list valid_receipts
+                format_placeholders = ','.join([f"'{r}'" for r in valid_receipts])
+                q_tx = f"SELECT * FROM transactions WHERE receipt_date LIKE '{date_mask_sql}' AND receipt_no IN ({format_placeholders})"
+                df_tx = cached_read_query(q_tx)
             else:
-                if valid_receipts:
-                    format_placeholders = ','.join(['%s'] * len(valid_receipts))
-                    df_tx = pd.read_sql_query(
-                        f"SELECT * FROM transactions WHERE receipt_date LIKE %s AND receipt_no IN ({format_placeholders})", 
-                        conn, 
-                        params=tuple([date_mask_sql] + valid_receipts)
-                    )
-                else:
-                    df_tx = pd.DataFrame()
-    except Exception:
-        try: conn.rollback()
-        except: pass
-        df_tx = pd.DataFrame()
+                df_tx = pd.DataFrame()
 
-    try:
-        if date_filter_mode == "range":
-            piu_query = "SELECT * FROM receivables_payments WHERE SUBSTRING(pay_date, 1, 10) BETWEEN %s AND %s"
-            piu_params = [str(start_d), str(end_d)]
-        else:
-            piu_query = "SELECT * FROM receivables_payments WHERE pay_date LIKE %s"
-            piu_params = [date_mask_sql]
+    if date_filter_mode == "range":
+        piu_query = "SELECT * FROM receivables_payments WHERE SUBSTRING(pay_date, 1, 10) BETWEEN :d1 AND :d2"
+        piu_params = {"d1": str(start_d), "d2": str(end_d)}
+    else:
+        piu_query = "SELECT * FROM receivables_payments WHERE pay_date LIKE :dmask"
+        piu_params = {"dmask": date_mask_sql}
 
-        if selected_kasir_filter != "Semua Kasir":
-            piu_query += " AND UPPER(TRIM(input_by)) = UPPER(TRIM(%s))"
-            piu_params.append(selected_kasir_filter)
-        if selected_shift_filter != "Semua Shift":
-            piu_query += " AND UPPER(TRIM(shift)) = UPPER(TRIM(%s))"
-            piu_params.append(selected_shift_filter)
-        df_piu = pd.read_sql_query(piu_query, conn, params=tuple(piu_params))
-    except Exception:
-        try: conn.rollback()
-        except: pass
-        df_piu = pd.DataFrame()
-    
-    conn.close()
+    if selected_kasir_filter != "Semua Kasir":
+        piu_query += " AND UPPER(TRIM(input_by)) = UPPER(TRIM(:ksr))"
+        piu_params["ksr"] = selected_kasir_filter
+    if selected_shift_filter != "Semua Shift":
+        piu_query += " AND UPPER(TRIM(shift)) = UPPER(TRIM(:shf))"
+        piu_params["shf"] = selected_shift_filter
+        
+    df_piu = get_rekon_data_cached(piu_query, tuple(sorted(piu_params.items())))
 
     if search_keyword.strip() and not df_items.empty:
         kw = search_keyword.strip().lower()

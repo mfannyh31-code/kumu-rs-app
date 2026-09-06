@@ -1,6 +1,6 @@
 import streamlit as st
 from datetime import datetime
-from db import get_db, format_rupiah, render_header
+from db import get_db, format_rupiah, render_header, clear_data_cache
 from sqlalchemy import text
 
 def render_page():
@@ -28,7 +28,7 @@ def render_page():
     if name_key not in st.session_state:
         st.session_state[name_key] = ""
 
-    # Jika auto_rm terisi dari tombol top-up, cari namanya langsung dari database
+    # Jika auto_rm terisi dari tombol top-up, cari namanya langsung dari database[cite: 12]
     if auto_rm and not st.session_state[name_key]:
         with get_db() as conn_auto:
             res_auto = conn_auto.execute(
@@ -38,7 +38,7 @@ def render_page():
             if res_auto:
                 st.session_state[name_key] = res_auto[0]
 
-    # Callback reaktif saat No. RM diubah
+    # Callback reaktif saat No. RM diubah[cite: 12]
     def update_name_from_db():
         rm_val = st.session_state.get(rm_key, "").strip()
         if rm_val:
@@ -65,7 +65,7 @@ def render_page():
             key=name_key
         )
         
-        # Cek sisa saldo aktif secara instan berdasarkan No. RM yang aktif diketik/dipilih
+        # Cek sisa saldo aktif secara instan berdasarkan No. RM yang aktif diketik/dipilih[cite: 12]
         current_rm_val = patient_rm.strip()
         if current_rm_val:
             with get_db() as conn_s:
@@ -121,6 +121,9 @@ def render_page():
                             "notes": notes.strip(),
                             "usr": current_user
                         })
+                
+                # Bersihkan cache agar data daftar deposit langsung ter-update otomatis
+                clear_data_cache()
                 
                 st.success(f"✓ Setoran deposit sebesar {format_rupiah(deposit_amount)} (Shift: {dep_shift}) berhasil disimpan untuk **{final_name}** oleh {current_user}!")
                 st.session_state.deposit_reset_cnt += 1

@@ -13,6 +13,24 @@ def format_angka(val):
         return "0"
 
 # =========================================================
+# CACHED QUERY UNTUK PERFORMA DAFTAR KUITANSI
+# =========================================================
+@st.cache_data(ttl=15)
+def get_filtered_transactions(query_str, count_query, params_tuple):
+    """
+    Mengambil data total hitung dan list transaksi dengan caching 
+    agar perpindahan halaman/sorting berjalan instan.
+    """
+    conn = get_db()
+    try:
+        params = dict(params_tuple)
+        total_data = conn.execute(text(count_query), params).fetchone()[0]
+        tx_list = pd.read_sql_query(text(query_str), conn, params=params)
+    finally:
+        conn.close()
+    return total_data, tx_list
+
+# =========================================================
 # MODAL KONFIRMASI HAPUS TRANSAKSI
 # =========================================================
 @st.dialog("Konfirmasi Hapus Data")
@@ -35,7 +53,6 @@ def confirm_delete_dialog(receipt_no):
     with c2:
         if st.button("🗑️ Ya, Hapus", use_container_width=True, key=f"confirm_del_{receipt_no}"):
             with get_db() as conn:
-                # Ambil info deposit yang pernah terpotong sebelumnya untuk dikembalikan saldonya
                 old_tx = conn.execute(text("SELECT pay_deposit FROM transactions WHERE receipt_no = :rno"), {"rno": str(receipt_no)}).fetchone()
                 if old_tx and float(old_tx[0] or 0) > 0:
                     existing_dep = conn.execute(text("""
@@ -598,8 +615,6 @@ def render_page():
 
     query_str = "SELECT id, shift, input_date, receipt_date, receipt_no, final_amount, cashier_username FROM transactions WHERE receipt_date LIKE :dmask"
     params = {"dmask": date_mask}
-    
-    # Biarkan query menampilkan seluruh transaksi agar Bendahara, Manajer, dan Asisten Manajer dapat melihat semua data
 
     if ksr.strip():
         query_str += " AND cashier_username LIKE :ksr"
@@ -613,24 +628,23 @@ def render_page():
         query_str += " AND receipt_no LIKE :kw"
         params["kw"] = f"%{kw.strip()}%"
 
-    with get_db() as conn:
-        count_query = query_str.replace("SELECT id, shift, input_date, receipt_date, receipt_no, final_amount, cashier_username", "SELECT COUNT(*)")
-        total_data = conn.execute(text(count_query), params).fetchone()[0]
+    count_query = query_str.replace("SELECT id, shift, input_date, receipt_date, receipt_no, final_amount, cashier_username", "SELECT COUNT(*)")
 
-        sort_col_map = {
-            "No": "id",
-            "Shift": "shift",
-            "Input": "input_date",
-            "Tgl Kuitansi": "receipt_date",
-            "No Kertas": "receipt_no",
-            "Transaksi": "final_amount",
-            "Kasir": "cashier_username"
-        }
-        db_sort_col = sort_col_map.get(st.session_state.sort_column, "id")
-        
-        final_query = query_str + f" ORDER BY {db_sort_col} {st.session_state.sort_order} LIMIT {int(show_limit)} OFFSET {st.session_state.page_offset}"
-        
-        tx_list = pd.read_sql_query(text(final_query), conn, params=params)
+    sort_col_map = {
+        "No": "id",
+        "Shift": "shift",
+        "Input": "input_date",
+        "Tgl Kuitansi": "receipt_date",
+        "No Kertas": "receipt_no",
+        "Transaksi": "final_amount",
+        "Kasir": "cashier_username"
+    }
+    db_sort_col = sort_col_map.get(st.session_state.sort_column, "id")
+    
+    final_query = query_str + f" ORDER BY {db_sort_col} {st.session_state.sort_order} LIMIT {int(show_limit)} OFFSET {st.session_state.page_offset}"
+
+    # Eksekusi kueri melalui fungsi cached untuk performa yang lebih cepat
+    total_data, tx_list = get_filtered_transactions(final_query, count_query, tuple(sorted(params.items())))
 
     st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 

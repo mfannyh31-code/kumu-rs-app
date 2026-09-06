@@ -4,26 +4,17 @@ from datetime import datetime
 from sqlalchemy import text
 from db import get_db, format_rupiah, render_header
 
-def render_page():
+@st.cache_data(ttl=300)
+def get_master_data_cache():
+    """
+    Mengambil data master hirarki layanan dari database dengan caching (berlaku 5 menit)
+    agar pemuatan form input kuitansi menjadi instan dan tidak membebani Supabase.
+    """
     conn = get_db()
-    render_header("💳 Input Kuitansi Kasir", "Entri multi-tindakan per kuitansi dengan pemilihan hierarki layanan (Layanan ➔ Unit ➔ Tindakan)")
-
-    # Inisialisasi Counter Reset Form
-    if 'form_reset_counter' not in st.session_state:
-        st.session_state.form_reset_counter = 0
-    cnt = st.session_state.form_reset_counter
-
-    if 'rows_list' not in st.session_state:
-        st.session_state.rows_list = [1, 2]
-    if 'next_row_id' not in st.session_state:
-        st.session_state.next_row_id = 3
-
-    # Ambil data master hirarki dari database (hanya yang berstatus ACTIVE)
     try:
         service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories WHERE status = 'ACTIVE' ORDER BY name ASC", conn)
     except Exception:
         service_cats_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
-    scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
 
     try:
         categories_df = pd.read_sql_query("""
@@ -46,6 +37,28 @@ def render_page():
         """, conn)
     except Exception:
         actions_df = pd.read_sql_query("SELECT id, category_id, name, price FROM actions ORDER BY name ASC", conn)
+        
+    conn.close()
+    return service_cats_df, categories_df, actions_df
+
+def render_page():
+    conn = get_db()
+    render_header("💳 Input Kuitansi Kasir", "Entri multi-tindakan per kuitansi dengan pemilihan hierarki layanan (Layanan ➔ Unit ➔ Tindakan)")
+
+    # Inisialisasi Counter Reset Form
+    if 'form_reset_counter' not in st.session_state:
+        st.session_state.form_reset_counter = 0
+    cnt = st.session_state.form_reset_counter
+
+    if 'rows_list' not in st.session_state:
+        st.session_state.rows_list = [1, 2]
+    if 'next_row_id' not in st.session_state:
+        st.session_state.next_row_id = 3
+
+    # Ambil data master hirarki dari fungsi cached agar performa cepat
+    service_cats_df, categories_df, actions_df = get_master_data_cache()
+    
+    scats_list = ["Select"] + service_cats_df['name'].tolist() if not service_cats_df.empty else ["Select"]
 
     st.markdown('<div class="custom-card">', unsafe_allow_html=True)
 

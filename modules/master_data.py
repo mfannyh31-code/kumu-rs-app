@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 from sqlalchemy import text
-from db import get_db, format_rupiah, render_header
+from db import get_db, format_rupiah, render_header, cached_read_query, clear_data_cache
 
 # =========================================================
 # MODAL EDIT KATEGORI LAYANAN (KEPALA)
@@ -21,6 +21,7 @@ def edit_service_category_dialog(scat_id, current_name):
                         {"name": new_name.strip(), "id": scat_id}
                     )
                     conn.commit()
+                    clear_data_cache()  # Bersihkan cache agar data terbaru langsung termuat
                 except Exception:
                     conn.rollback()
                 conn.close()
@@ -59,6 +60,7 @@ def delete_service_category_dialog(scat_id, scat_name):
                     {"id": scat_id}
                 )
                 conn.commit()
+                clear_data_cache()
             except Exception:
                 conn.rollback()
             conn.close()
@@ -70,13 +72,7 @@ def delete_service_category_dialog(scat_id, scat_name):
 # =========================================================
 @st.dialog("✏️ Edit Kategori Unit", width="small")
 def edit_category_dialog(cat_id, current_name, current_scat_id):
-    conn = get_db()
-    try:
-        scat_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
-    except Exception:
-        conn.rollback()
-        scat_df = pd.DataFrame()
-    conn.close()
+    scat_df = cached_read_query("SELECT id, name FROM service_categories ORDER BY name ASC")
     
     scat_list = scat_df['name'].tolist() if not scat_df.empty else []
     curr_scat_name = scat_df[scat_df['id'] == current_scat_id]['name'].values[0] if not scat_df.empty and current_scat_id in scat_df['id'].values else (scat_list[0] if scat_list else "")
@@ -95,6 +91,7 @@ def edit_category_dialog(cat_id, current_name, current_scat_id):
                         {"scat_id": int(new_scat_id), "name": new_name.strip(), "id": cat_id}
                     )
                     conn.commit()
+                    clear_data_cache()
                 except Exception:
                     conn.rollback()
                 conn.close()
@@ -133,6 +130,7 @@ def delete_category_dialog(cat_id, cat_name):
                     {"id": cat_id}
                 )
                 conn.commit()
+                clear_data_cache()
             except Exception:
                 conn.rollback()
             conn.close()
@@ -144,13 +142,7 @@ def delete_category_dialog(cat_id, cat_name):
 # =========================================================
 @st.dialog("✏️ Edit Tindakan & Tarif", width="medium")
 def edit_action_dialog(act_id, current_cat_id, current_name, current_price):
-    conn = get_db()
-    try:
-        all_cat_df = pd.read_sql_query("SELECT id, name FROM categories ORDER BY name ASC", conn)
-    except Exception:
-        conn.rollback()
-        all_cat_df = pd.DataFrame()
-    conn.close()
+    all_cat_df = cached_read_query("SELECT id, name FROM categories ORDER BY name ASC")
     
     cats_list = all_cat_df['name'].tolist() if not all_cat_df.empty else []
     curr_cat_name = all_cat_df[all_cat_df['id'] == current_cat_id]['name'].values[0] if not all_cat_df.empty and current_cat_id in all_cat_df['id'].values else (cats_list[0] if cats_list else "")
@@ -171,6 +163,7 @@ def edit_action_dialog(act_id, current_cat_id, current_name, current_price):
                         {"cat_id": int(new_cat_id), "name": ed_name.strip(), "price": ed_price, "id": act_id}
                     )
                     conn.commit()
+                    clear_data_cache()
                 except Exception:
                     conn.rollback()
                 conn.close()
@@ -209,6 +202,7 @@ def delete_action_dialog(act_id, act_name):
                     {"id": act_id}
                 )
                 conn.commit()
+                clear_data_cache()
             except Exception:
                 conn.rollback()
             conn.close()
@@ -312,6 +306,7 @@ def render_page():
                         )
                         conn.commit()
                         conn.close()
+                        clear_data_cache()
                         st.success(f"Kategori layanan '{new_scat_name.strip()}' ditambahkan!")
                         st.rerun()
                     except Exception as e:
@@ -336,11 +331,13 @@ def render_page():
         query_scat += " ORDER BY name ASC"
         
         try:
-            scat_df = pd.read_sql_query(text(query_scat), conn, params=params_scat)
+            # Menggunakan cached query dengan parameter tersusun
+            sql_compiled = query_scat
+            if search_scat_kw.strip():
+                sql_compiled = sql_compiled.replace(":kw", f"'{search_scat_kw.strip()}'")
+            scat_df = cached_read_query(sql_compiled)
         except Exception:
-            conn.rollback()
-            scat_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
-            scat_df['status'] = 'ACTIVE'
+            scat_df = cached_read_query("SELECT id, name, status FROM service_categories ORDER BY name ASC")
         
         if not scat_df.empty:
             st.markdown("""
@@ -387,6 +384,7 @@ def render_page():
                                 {"status": new_st, "id": scat_id}
                             )
                             conn.commit()
+                            clear_data_cache()
                             st.rerun()
                         except Exception as e:
                             conn.rollback()
@@ -409,11 +407,7 @@ def render_page():
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
         st.markdown("<div class='master-box-title'>Tambah Kategori Unit Baru</div>", unsafe_allow_html=True)
         
-        try:
-            scat_opt_df = pd.read_sql_query("SELECT id, name FROM service_categories WHERE status='ACTIVE' ORDER BY name ASC", conn)
-        except Exception:
-            conn.rollback()
-            scat_opt_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
+        scat_opt_df = cached_read_query("SELECT id, name FROM service_categories WHERE status='ACTIVE' ORDER BY name ASC")
         
         if not scat_opt_df.empty:
             c_form1, c_form2, c_form3 = st.columns([2, 2.5, 1])
@@ -432,6 +426,7 @@ def render_page():
                             )
                             conn.commit()
                             conn.close()
+                            clear_data_cache()
                             st.success(f"Unit '{new_cat_name.strip()}' ditambahkan!")
                             st.rerun()
                         except Exception as e:
@@ -454,26 +449,12 @@ def render_page():
             SELECT c.id as cat_id, c.name as cat_name, s.name as scat_name, c.service_category_id as scat_id, c.status as cat_status
             FROM categories c
             LEFT JOIN service_categories s ON c.service_category_id = s.id
-            WHERE 1=1
+            ORDER BY s.name ASC, c.name ASC
         """
-        params_cat = {}
-        if search_cat_kw.strip():
-            query_cat += " AND c.name ILIKE :kw"
-            params_cat["kw"] = f"%{search_cat_kw.strip()}%"
-        query_cat += " ORDER BY s.name ASC, c.name ASC"
+        cats_df = cached_read_query(query_cat)
         
-        try:
-            cats_df = pd.read_sql_query(text(query_cat), conn, params=params_cat)
-        except Exception:
-            conn.rollback()
-            query_cat_fb = """
-                SELECT c.id as cat_id, c.name as cat_name, s.name as scat_name, c.service_category_id as scat_id
-                FROM categories c
-                LEFT JOIN service_categories s ON c.service_category_id = s.id
-                ORDER BY s.name ASC, c.name ASC
-            """
-            cats_df = pd.read_sql_query(query_cat_fb, conn)
-            cats_df['cat_status'] = 'ACTIVE'
+        if search_cat_kw.strip() and not cats_df.empty:
+            cats_df = cats_df[cats_df['cat_name'].str.contains(search_cat_kw.strip(), case=False, na=False)]
         
         if not cats_df.empty:
             st.markdown("""
@@ -522,6 +503,7 @@ def render_page():
                                 {"status": new_st, "id": cid}
                             )
                             conn.commit()
+                            clear_data_cache()
                             st.rerun()
                         except Exception as e:
                             conn.rollback()
@@ -544,11 +526,7 @@ def render_page():
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
         st.markdown("<div class='master-box-title'>Tambah Tindakan & Tarif Baru</div>", unsafe_allow_html=True)
         
-        try:
-            all_cat_df = pd.read_sql_query("SELECT id, name FROM categories WHERE status='ACTIVE' ORDER BY name ASC", conn)
-        except Exception:
-            conn.rollback()
-            all_cat_df = pd.read_sql_query("SELECT id, name FROM categories ORDER BY name ASC", conn)
+        all_cat_df = cached_read_query("SELECT id, name FROM categories WHERE status='ACTIVE' ORDER BY name ASC")
         
         if not all_cat_df.empty:
             ac1, ac2, ac3, ac4 = st.columns([1.5, 2.2, 1.2, 0.8])
@@ -569,6 +547,7 @@ def render_page():
                             )
                             conn.commit()
                             conn.close()
+                            clear_data_cache()
                             st.success("Disimpan!")
                             st.rerun()
                         except Exception as e:
@@ -597,30 +576,15 @@ def render_page():
             SELECT a.id as act_id, a.category_id as cat_id, c.name as cat_name, a.name as act_name, a.price as act_price, a.status as act_status
             FROM actions a 
             JOIN categories c ON a.category_id = c.id
-            WHERE 1=1
+            ORDER BY c.name ASC, a.name ASC
         """
-        params_acts = {}
-        if search_act_kw.strip():
-            query_acts += " AND a.name ILIKE :kw"
-            params_acts["kw"] = f"%{search_act_kw.strip()}%"
-        if selected_cat_filter != "Semua Kategori Unit":
-            query_acts += " AND c.name = :cat_name"
-            params_acts["cat_name"] = selected_cat_filter
-            
-        query_acts += " ORDER BY c.name ASC, a.name ASC"
+        acts_df = cached_read_query(query_acts)
         
-        try:
-            acts_df = pd.read_sql_query(text(query_acts), conn, params=params_acts)
-        except Exception:
-            conn.rollback()
-            query_acts_fb = """
-                SELECT a.id as act_id, a.category_id as cat_id, c.name as cat_name, a.name as act_name, a.price as act_price
-                FROM actions a 
-                JOIN categories c ON a.category_id = c.id
-                WHERE 1=1
-            """
-            acts_df = pd.read_sql_query(query_acts_fb, conn)
-            acts_df['act_status'] = 'ACTIVE'
+        if not acts_df.empty:
+            if search_act_kw.strip():
+                acts_df = acts_df[acts_df['act_name'].str.contains(search_act_kw.strip(), case=False, na=False)]
+            if selected_cat_filter != "Semua Kategori Unit":
+                acts_df = acts_df[acts_df['cat_name'] == selected_cat_filter]
         
         if not acts_df.empty:
             st.markdown("""
@@ -672,6 +636,7 @@ def render_page():
                                 {"status": new_st, "id": aid}
                             )
                             conn.commit()
+                            clear_data_cache()
                             st.rerun()
                         except Exception as e:
                             conn.rollback()

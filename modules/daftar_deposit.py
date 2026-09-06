@@ -5,6 +5,41 @@ from db import get_db, format_rupiah, render_header
 from sqlalchemy import text
 
 # =========================================================
+# CACHED QUERY UNTUK PERFORMA DAFTAR DEPOSIT
+# =========================================================
+@st.cache_data(ttl=20)
+def get_deposits_data(date_mask):
+    """
+    Mengambil data seluruh transaksi deposit berdasarkan filter tanggal 
+    dengan caching agar pemuatan tabel pasien instan.
+    """
+    conn = get_db()
+    try:
+        df_all = pd.read_sql_query(
+            text("SELECT * FROM deposits WHERE deposit_date LIKE :dmask ORDER BY id DESC"), 
+            conn, 
+            params={"dmask": date_mask}
+        )
+    finally:
+        conn.close()
+    return df_all
+
+@st.cache_data(ttl=60)
+def get_deposit_users_list():
+    """
+    Mengambil daftar user/kasir unik yang pernah mencatat deposit.
+    """
+    conn = get_db()
+    try:
+        users_df = pd.read_sql_query("SELECT DISTINCT input_by FROM deposits WHERE input_by IS NOT NULL", conn)
+        list_users = ["Semua User"] + [str(u).upper() for u in users_df['input_by'].tolist() if str(u).strip() != ""]
+    except Exception:
+        list_users = ["Semua User"]
+    finally:
+        conn.close()
+    return list_users
+
+# =========================================================
 # MODAL DETAIL RIWAYAT TRANSAKSI PASIEN
 # =========================================================
 @st.dialog("🔍 Detail Riwayat Saldo & Transaksi", width="large")
@@ -213,12 +248,8 @@ def render_page():
 
     st.markdown('<div class="custom-card">', unsafe_allow_html=True)
     
-    with get_db() as conn:
-        try:
-            users_df = pd.read_sql_query("SELECT DISTINCT input_by FROM deposits WHERE input_by IS NOT NULL", conn)
-            list_users = ["Semua User"] + [str(u).upper() for u in users_df['input_by'].tolist() if str(u).strip() != ""]
-        except:
-            list_users = ["Semua User"]
+    # Ambil list users dari fungsi cached
+    list_users = get_deposit_users_list()
     
     # --- KONTROL FILTER WAKTU (HARIAN, BULANAN, TAHUNAN) ---
     st.markdown('<div style="background:#FFFFFF; padding:20px; border-radius:10px; border:1px solid #CBD5E1; margin-bottom:20px;">', unsafe_allow_html=True)
@@ -260,12 +291,8 @@ def render_page():
     with f_user:
         user_filter = st.selectbox("Kasir / User", list_users)
 
-    with get_db() as conn:
-        df_all = pd.read_sql_query(
-            text("SELECT * FROM deposits WHERE deposit_date LIKE :dmask ORDER BY id DESC"), 
-            conn, 
-            params={"dmask": date_mask}
-        )
+    # Ambil data deposit dari fungsi cached berdasarkan date_mask
+    df_all = get_deposits_data(date_mask)
     
     st.markdown("<div style='height: 10px;'></div>", unsafe_allow_html=True)
 

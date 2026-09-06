@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime
 from sqlalchemy import text
-from db import get_db, format_rupiah, render_header
+from db import get_db, format_rupiah, render_header, clear_data_cache
 
 def render_page():
     render_header("➕ Input Piutang Baru", "Catat piutang pasien berdasarkan pemilihan hirarki layanan (Layanan ➔ Unit ➔ Tindakan) atau input manual.")
@@ -175,51 +175,51 @@ def render_page():
             st.error("⚠️ No. Ref, Nama Pasien, dan Total Nominal Piutang wajib diisi dengan benar!")
         else:
             try:
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS receivables (
-                        id SERIAL PRIMARY KEY, receipt_no TEXT, patient_id TEXT, patient_name TEXT, 
-                        total_bill REAL, paid_amount REAL, remaining_debt REAL, due_date TEXT, status TEXT, notes TEXT, input_by TEXT
-                    )
-                """))
-                conn.execute(text("""
-                    CREATE TABLE IF NOT EXISTS receivables_items (
-                        id SERIAL PRIMARY KEY, debt_id INTEGER, category_name TEXT, action_name TEXT, 
-                        amount REAL, paid_status TEXT, notes TEXT
-                    )
-                """))
-                
-                res_ins = conn.execute(text("""
-                    INSERT INTO receivables (receipt_no, patient_id, patient_name, total_bill, paid_amount, remaining_debt, due_date, status, notes, input_by)
-                    VALUES (:receipt_no, :patient_id, :patient_name, :total_bill, 0.0, :remaining_debt, :due_date, 'Belum Lunas', :notes, :input_by)
-                    RETURNING id
-                """), {
-                    "receipt_no": no_ref.strip(),
-                    "patient_id": norm.strip(),
-                    "patient_name": final_nama,
-                    "total_bill": total_piutang_baru,
-                    "remaining_debt": total_piutang_baru,
-                    "due_date": str(due_date),
-                    "notes": catatan_umum,
-                    "input_by": str(st.session_state.get('user', 'ADMIN')).upper()
-                })
-                
-                row_res = res_ins.fetchone()
-                debt_id = row_res[0] if row_res else None
-
-                for itm in items_list:
+                with conn.begin():
                     conn.execute(text("""
-                        INSERT INTO receivables_items (debt_id, category_name, action_name, amount, paid_status, notes)
-                        VALUES (:debt_id, :category_name, :action_name, :amount, 'Belum Lunas', :notes)
+                        CREATE TABLE IF NOT EXISTS receivables (
+                            id SERIAL PRIMARY KEY, receipt_no TEXT, patient_id TEXT, patient_name TEXT, 
+                            total_bill REAL, paid_amount REAL, remaining_debt REAL, due_date TEXT, status TEXT, notes TEXT, input_by TEXT
+                        )
+                    """))
+                    conn.execute(text("""
+                        CREATE TABLE IF NOT EXISTS receivables_items (
+                            id SERIAL PRIMARY KEY, debt_id INTEGER, category_name TEXT, action_name TEXT, 
+                            amount REAL, paid_status TEXT, notes TEXT
+                        )
+                    """))
+                    
+                    res_ins = conn.execute(text("""
+                        INSERT INTO receivables (receipt_no, patient_id, patient_name, total_bill, paid_amount, remaining_debt, due_date, status, notes, input_by)
+                        VALUES (:receipt_no, :patient_id, :patient_name, :total_bill, 0.0, :remaining_debt, :due_date, 'Belum Lunas', :notes, :input_by)
+                        RETURNING id
                     """), {
-                        "debt_id": debt_id,
-                        "category_name": itm['unit'],
-                        "action_name": itm['action'],
-                        "amount": itm['amount'],
-                        "notes": itm['notes']
+                        "receipt_no": no_ref.strip(),
+                        "patient_id": norm.strip(),
+                        "patient_name": final_nama,
+                        "total_bill": total_piutang_baru,
+                        "remaining_debt": total_piutang_baru,
+                        "due_date": str(due_date),
+                        "notes": catatan_umum,
+                        "input_by": str(st.session_state.get('user', 'ADMIN')).upper()
                     })
+                    
+                    row_res = res_ins.fetchone()
+                    debt_id = row_res[0] if row_res else None
 
-                conn.commit()
-                conn.close()
+                    for itm in items_list:
+                        conn.execute(text("""
+                            INSERT INTO receivables_items (debt_id, category_name, action_name, amount, paid_status, notes)
+                            VALUES (:debt_id, :category_name, :action_name, :amount, 'Belum Lunas', :notes)
+                        """), {
+                            "debt_id": debt_id,
+                            "category_name": itm['unit'],
+                            "action_name": itm['action'],
+                            "amount": itm['amount'],
+                            "notes": itm['notes']
+                        })
+
+                clear_data_cache()
                 st.success("✓ Data piutang berhasil dicatat!")
                 st.session_state.piutang_rows = [1]
                 st.session_state.piu_form_cnt += 1
@@ -227,6 +227,5 @@ def render_page():
                 st.rerun()
             except Exception as e:
                 conn.rollback()
-                conn.close()
                 st.error(f"Gagal menyimpan: {e}")
     conn.close()

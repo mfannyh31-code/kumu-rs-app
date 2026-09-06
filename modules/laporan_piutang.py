@@ -2,12 +2,31 @@ import streamlit as st
 import pandas as pd
 import io
 from datetime import datetime
-from db import get_db, format_rupiah, render_header
+from db import get_db, format_rupiah, render_header, cached_read_query
 from sqlalchemy import text
 
 def format_angka(val):
     try: return f"{int(float(val)):,}".replace(",", ".")
     except: return "0"
+
+# =========================================================
+# CACHED QUERY UNTUK PERFORMA LAPORAN PIUTANG
+# =========================================================
+@st.cache_data(ttl=20)
+def get_receivables_report_data(query_str, params_tuple):
+    """
+    Mengambil data rincian piutang dan item tagihan dengan caching 
+    agar pemuatan laporan bulanan/harian menjadi instan.
+    """
+    conn = get_db()
+    try:
+        params = dict(params_tuple)
+        df_all = pd.read_sql_query(text(query_str), conn, params=params)
+    except Exception:
+        df_all = pd.DataFrame()
+    finally:
+        conn.close()
+    return df_all
 
 def render_page():
     render_header("📊 Laporan & Rekapitulasi Piutang", "Analisis data tagihan piutang berdasarkan filter Harian, Bulanan, dan Tahunan dengan rincian unit layanan hirarki baru.")
@@ -95,16 +114,18 @@ def render_page():
     
     st.markdown('</div>', unsafe_allow_html=True)
 
-    with get_db() as conn:
-        # Query utama tabel receivables digabungkan dengan rincian item piutang (receivables_items)
-        query_rep = """
-            SELECT r.*, i.category_name as unit_layanan, i.action_name as jenis_tindakan, i.amount as item_amount, i.paid_status as item_status
-            FROM receivables r
-            LEFT JOIN receivables_items i ON r.id = i.debt_id
-            WHERE r.due_date LIKE :dmask
-            ORDER BY r.id DESC
-        """
-        df_all = pd.read_sql_query(text(query_rep), conn, params={"dmask": date_mask})
+    # Query utama tabel receivables digabungkan dengan rincian item piutang (receivables_items)
+    query_rep = """
+        SELECT r.*, i.category_name as unit_layanan, i.action_name as jenis_tindakan, i.amount as item_amount, i.paid_status as item_status
+        FROM receivables r
+        LEFT JOIN receivables_items i ON r.id = i.debt_id
+        WHERE r.due_date LIKE :dmask
+        ORDER BY r.id DESC
+    """
+    params_rep = {"dmask": date_mask}
+
+    # Ambil data melalui fungsi cached
+    df_all = get_receivables_report_data(query_rep, tuple(sorted(params_rep.items())))
 
     if not df_all.empty:
         # Menghitung metrik berdasarkan ID unik piutang agar tidak terduplikasi akibat join item
