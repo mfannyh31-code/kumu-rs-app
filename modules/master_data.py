@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
-from db import get_db, format_rupiah, render_header
 from sqlalchemy import text
+from db import get_db, format_rupiah, render_header
 
 # =========================================================
 # MODAL EDIT KATEGORI LAYANAN (KEPALA)
@@ -14,17 +14,18 @@ def edit_service_category_dialog(scat_id, current_name):
         submitted = st.form_submit_button("Simpan Perubahan 💾", use_container_width=True)
         if submitted:
             if new_name.strip():
+                conn = get_db()
                 try:
-                    with get_db() as conn:
-                        with conn.begin():
-                            conn.execute(
-                                text("UPDATE service_categories SET name = :sname WHERE id = :sid"),
-                                {"sname": new_name.strip(), "sid": scat_id}
-                            )
-                    st.success("Kategori layanan berhasil diubah!")
-                    st.rerun()
+                    conn.execute(
+                        text("UPDATE service_categories SET name = :name WHERE id = :id"),
+                        {"name": new_name.strip(), "id": scat_id}
+                    )
+                    conn.commit()
                 except Exception:
-                    st.error("Nama kategori layanan tersebut sudah ada.")
+                    conn.rollback()
+                conn.close()
+                st.success("Kategori layanan berhasil diubah!")
+                st.rerun()
             else:
                 st.warning("Nama kategori layanan tidak boleh kosong.")
 
@@ -51,9 +52,16 @@ def delete_service_category_dialog(scat_id, scat_name):
             st.rerun()
     with c2:
         if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_scat_{scat_id}"):
-            with get_db() as conn:
-                with conn.begin():
-                    conn.execute(text("DELETE FROM service_categories WHERE id = :sid"), {"sid": scat_id})
+            conn = get_db()
+            try:
+                conn.execute(
+                    text("DELETE FROM service_categories WHERE id = :id"),
+                    {"id": scat_id}
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            conn.close()
             st.success("Kategori layanan berhasil dihapus!")
             st.rerun()
 
@@ -62,11 +70,16 @@ def delete_service_category_dialog(scat_id, scat_name):
 # =========================================================
 @st.dialog("✏️ Edit Kategori Unit", width="small")
 def edit_category_dialog(cat_id, current_name, current_scat_id):
-    with get_db() as conn:
-        scat_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
+    conn = get_db()
+    try:
+        scat_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
+    except Exception:
+        conn.rollback()
+        scat_df = pd.DataFrame()
+    conn.close()
     
-    scat_list = scat_df['name'].tolist()
-    curr_scat_name = scat_df[scat_df['id'] == current_scat_id]['name'].values[0] if current_scat_id in scat_df['id'].values else (scat_list[0] if scat_list else "")
+    scat_list = scat_df['name'].tolist() if not scat_df.empty else []
+    curr_scat_name = scat_df[scat_df['id'] == current_scat_id]['name'].values[0] if not scat_df.empty and current_scat_id in scat_df['id'].values else (scat_list[0] if scat_list else "")
     
     with st.form(f"form_edit_cat_{cat_id}"):
         sel_scat = st.selectbox("Kategori Layanan Utama", scat_list, index=scat_list.index(curr_scat_name) if curr_scat_name in scat_list else 0)
@@ -75,17 +88,18 @@ def edit_category_dialog(cat_id, current_name, current_scat_id):
         if submitted:
             if new_name.strip():
                 new_scat_id = scat_df[scat_df['name'] == sel_scat]['id'].values[0]
+                conn = get_db()
                 try:
-                    with get_db() as conn:
-                        with conn.begin():
-                            conn.execute(
-                                text("UPDATE categories SET service_category_id = :scatid, name = :cname WHERE id = :cid"),
-                                {"scatid": int(new_scat_id), "cname": new_name.strip(), "cid": cat_id}
-                            )
-                    st.success("Kategori unit berhasil diubah!")
-                    st.rerun()
+                    conn.execute(
+                        text("UPDATE categories SET service_category_id = :scat_id, name = :name WHERE id = :id"),
+                        {"scat_id": int(new_scat_id), "name": new_name.strip(), "id": cat_id}
+                    )
+                    conn.commit()
                 except Exception:
-                    st.error("Nama kategori unit tersebut sudah ada.")
+                    conn.rollback()
+                conn.close()
+                st.success("Kategori unit berhasil diubah!")
+                st.rerun()
             else:
                 st.warning("Nama kategori tidak boleh kosong.")
 
@@ -112,9 +126,16 @@ def delete_category_dialog(cat_id, cat_name):
             st.rerun()
     with c2:
         if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_cat_{cat_id}"):
-            with get_db() as conn:
-                with conn.begin():
-                    conn.execute(text("DELETE FROM categories WHERE id = :cid"), {"cid": cat_id})
+            conn = get_db()
+            try:
+                conn.execute(
+                    text("DELETE FROM categories WHERE id = :id"),
+                    {"id": cat_id}
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            conn.close()
             st.success("Kategori unit berhasil dihapus!")
             st.rerun()
 
@@ -123,11 +144,16 @@ def delete_category_dialog(cat_id, cat_name):
 # =========================================================
 @st.dialog("✏️ Edit Tindakan & Tarif", width="medium")
 def edit_action_dialog(act_id, current_cat_id, current_name, current_price):
-    with get_db() as conn:
-        all_cat_df = pd.read_sql_query(text("SELECT id, name FROM categories ORDER BY name ASC"), conn)
+    conn = get_db()
+    try:
+        all_cat_df = pd.read_sql_query("SELECT id, name FROM categories ORDER BY name ASC", conn)
+    except Exception:
+        conn.rollback()
+        all_cat_df = pd.DataFrame()
+    conn.close()
     
-    cats_list = all_cat_df['name'].tolist()
-    curr_cat_name = all_cat_df[all_cat_df['id'] == current_cat_id]['name'].values[0] if current_cat_id in all_cat_df['id'].values else (cats_list[0] if cats_list else "")
+    cats_list = all_cat_df['name'].tolist() if not all_cat_df.empty else []
+    curr_cat_name = all_cat_df[all_cat_df['id'] == current_cat_id]['name'].values[0] if not all_cat_df.empty and current_cat_id in all_cat_df['id'].values else (cats_list[0] if cats_list else "")
     
     with st.form(f"form_edit_act_{act_id}"):
         sel_cat = st.selectbox("Kategori Unit", cats_list, index=cats_list.index(curr_cat_name) if curr_cat_name in cats_list else 0)
@@ -138,12 +164,16 @@ def edit_action_dialog(act_id, current_cat_id, current_name, current_price):
         if submitted:
             if ed_name.strip() and ed_price >= 0:
                 new_cat_id = all_cat_df[all_cat_df['name'] == sel_cat]['id'].values[0]
-                with get_db() as conn:
-                    with conn.begin():
-                        conn.execute(
-                            text("UPDATE actions SET category_id = :catid, name = :aname, price = :price WHERE id = :aid"),
-                            {"catid": int(new_cat_id), "aname": ed_name.strip(), "price": ed_price, "aid": act_id}
-                        )
+                conn = get_db()
+                try:
+                    conn.execute(
+                        text("UPDATE actions SET category_id = :cat_id, name = :name, price = :price WHERE id = :id"),
+                        {"cat_id": int(new_cat_id), "name": ed_name.strip(), "price": ed_price, "id": act_id}
+                    )
+                    conn.commit()
+                except Exception:
+                    conn.rollback()
+                conn.close()
                 st.success("Tindakan berhasil diupdate!")
                 st.rerun()
             else:
@@ -172,9 +202,16 @@ def delete_action_dialog(act_id, act_name):
             st.rerun()
     with c2:
         if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_act_{act_id}"):
-            with get_db() as conn:
-                with conn.begin():
-                    conn.execute(text("DELETE FROM actions WHERE id = :aid"), {"aid": act_id})
+            conn = get_db()
+            try:
+                conn.execute(
+                    text("DELETE FROM actions WHERE id = :id"),
+                    {"id": act_id}
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+            conn.close()
             st.success("Tindakan berhasil dihapus!")
             st.rerun()
 
@@ -182,6 +219,19 @@ def delete_action_dialog(act_id, act_name):
 # HALAMAN UTAMA MASTER DATA
 # =========================================================
 def render_page():
+    conn = get_db()
+    
+    # Auto-check & add 'status' column if not exists
+    try:
+        for tbl in ['service_categories', 'categories', 'actions']:
+            check_q = text("SELECT column_name FROM information_schema.columns WHERE table_name=:tbl AND column_name='status'")
+            res = conn.execute(check_q, {"tbl": tbl}).fetchone()
+            if not res:
+                conn.execute(text(f"ALTER TABLE {tbl} ADD COLUMN status TEXT DEFAULT 'ACTIVE'"))
+                conn.commit()
+    except Exception:
+        conn.rollback()
+
     render_header("⚙️ Kelola Master Data Layanan", "Penambahan, pencarian, dan pengaturan kategori layanan, kategori unit, serta tarif tindakan")
 
     st.markdown("""
@@ -231,6 +281,7 @@ def render_page():
             color: #FFFFFF !important;
         }
         .btn-act-edit button { background-color: #F59E0B !important; }
+        .btn-act-hide button { background-color: #64748B !important; }
         .btn-act-del button { background-color: #EF4444 !important; }
         </style>
     """, unsafe_allow_html=True)
@@ -255,43 +306,52 @@ def render_page():
             if st.button("Simpan ➕", use_container_width=True, type="primary", key="btn_save_scat"):
                 if new_scat_name.strip():
                     try:
-                        with get_db() as conn:
-                            with conn.begin():
-                                conn.execute(
-                                    text("INSERT INTO service_categories (name) VALUES (:sname)"),
-                                    {"sname": new_scat_name.strip()}
-                                )
+                        conn.execute(
+                            text("INSERT INTO service_categories (name, status) VALUES (:name, 'ACTIVE')"),
+                            {"name": new_scat_name.strip()}
+                        )
+                        conn.commit()
+                        conn.close()
                         st.success(f"Kategori layanan '{new_scat_name.strip()}' ditambahkan!")
                         st.rerun()
-                    except Exception:
-                        st.error("Kategori layanan tersebut sudah terdaftar.")
+                    except Exception as e:
+                        conn.rollback()
+                        conn.close()
+                        st.error(f"Gagal menambah kategori: {e}")
                 else:
                     st.warning("Nama tidak boleh kosong.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
-        st.markdown("<div class='master-box-title'>Daftar Kategori Layanan Aktif</div>", unsafe_allow_html=True)
+        st.markdown("<div class='master-box-title'>Daftar Kategori Layanan</div>", unsafe_allow_html=True)
         
         search_scat_kw = st.text_input("🔍 Cari Kategori Layanan...", placeholder="Ketik nama...", key="search_scat_box", label_visibility="collapsed")
         st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
-        query_scat = "SELECT id, name FROM service_categories"
+        query_scat = "SELECT id, name, status FROM service_categories"
         params_scat = {}
         if search_scat_kw.strip():
-            query_scat += " WHERE name LIKE :kw"
+            query_scat += " WHERE name ILIKE :kw"
             params_scat["kw"] = f"%{search_scat_kw.strip()}%"
         query_scat += " ORDER BY name ASC"
         
-        with get_db() as conn:
+        try:
             scat_df = pd.read_sql_query(text(query_scat), conn, params=params_scat)
+        except Exception:
+            conn.rollback()
+            scat_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
+            scat_df['status'] = 'ACTIVE'
         
         if not scat_df.empty:
             st.markdown("""
                 <div style="background:#028090; color:white; padding:6px 10px; border-radius:4px; font-weight:700; font-size:12.5px; margin-bottom:4px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
                         <span style="width:10%;">ID</span>
-                        <span style="width:78%;">Nama Kategori Layanan Utama</span>
-                        <span style="width:12%; text-align:center;">Aksi</span>
+                        <span style="width:58%;">Nama Kategori Layanan Utama</span>
+                        <span style="width:14%; text-align:center;">Status</span>
+                        <span style="width:9%; text-align:center;">Edit</span>
+                        <span style="width:9%; text-align:center;">Hide/Show</span>
+                        <span style="width:9%; text-align:center;">Hapus</span>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
@@ -299,19 +359,40 @@ def render_page():
             for idx, r in scat_df.iterrows():
                 scat_id = r['id']
                 scat_name = r['name']
+                scat_status = r.get('status', 'ACTIVE') or 'ACTIVE'
+                is_hidden = scat_status == 'HIDDEN'
+                status_badge = "<span style='background:#EF4444; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>HIDDEN</span>" if is_hidden else "<span style='background:#10B981; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>ACTIVE</span>"
                 
                 st.markdown('<div class="master-row-card">', unsafe_allow_html=True)
-                col1, col2, col3, col4 = st.columns([0.8, 7.2, 1.0, 1.0])
+                col1, col2, col3, col4, col5, col6 = st.columns([0.8, 5.2, 1.4, 0.9, 0.9, 0.9])
                 with col1:
                     st.markdown(f"<b>#{scat_id}</b>", unsafe_allow_html=True)
                 with col2:
-                    st.markdown(f"<b>{scat_name}</b>", unsafe_allow_html=True)
+                    st.markdown(f"<span style='{'color:#94A3B8; text-decoration:line-through;' if is_hidden else ''}'><b>{scat_name}</b></span>", unsafe_allow_html=True)
                 with col3:
+                    st.markdown(f"<div style='text-align:center;'>{status_badge}</div>", unsafe_allow_html=True)
+                with col4:
                     st.markdown('<div class="btn-act-edit">', unsafe_allow_html=True)
                     if st.button("✏️", key=f"ed_scat_{scat_id}", help="Edit", use_container_width=True):
                         edit_service_category_dialog(scat_id, scat_name)
                     st.markdown('</div>', unsafe_allow_html=True)
-                with col4:
+                with col5:
+                    st.markdown('<div class="btn-act-hide">', unsafe_allow_html=True)
+                    hide_label = "👁️" if is_hidden else "🔒"
+                    if st.button(hide_label, key=f"hide_scat_{scat_id}", help="Sembunyikan / Tampilkan", use_container_width=True):
+                        new_st = 'ACTIVE' if is_hidden else 'HIDDEN'
+                        try:
+                            conn.execute(
+                                text("UPDATE service_categories SET status = :status WHERE id = :id"),
+                                {"status": new_st, "id": scat_id}
+                            )
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Gagal update: {e}")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                with col6:
                     st.markdown('<div class="btn-act-del">', unsafe_allow_html=True)
                     if st.button("🗑️", key=f"del_scat_{scat_id}", help="Hapus", use_container_width=True):
                         delete_service_category_dialog(scat_id, scat_name)
@@ -328,8 +409,11 @@ def render_page():
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
         st.markdown("<div class='master-box-title'>Tambah Kategori Unit Baru</div>", unsafe_allow_html=True)
         
-        with get_db() as conn:
-            scat_opt_df = pd.read_sql_query(text("SELECT id, name FROM service_categories ORDER BY name ASC"), conn)
+        try:
+            scat_opt_df = pd.read_sql_query("SELECT id, name FROM service_categories WHERE status='ACTIVE' ORDER BY name ASC", conn)
+        except Exception:
+            conn.rollback()
+            scat_opt_df = pd.read_sql_query("SELECT id, name FROM service_categories ORDER BY name ASC", conn)
         
         if not scat_opt_df.empty:
             c_form1, c_form2, c_form3 = st.columns([2, 2.5, 1])
@@ -342,50 +426,65 @@ def render_page():
                     if new_cat_name.strip():
                         parent_scat_id = scat_opt_df[scat_opt_df['name'] == parent_scat_name]['id'].values[0]
                         try:
-                            with get_db() as conn:
-                                with conn.begin():
-                                    conn.execute(
-                                        text("INSERT INTO categories (service_category_id, name) VALUES (:scatid, :cname)"),
-                                        {"scatid": int(parent_scat_id), "cname": new_cat_name.strip()}
-                                    )
+                            conn.execute(
+                                text("INSERT INTO categories (service_category_id, name, status) VALUES (:scat_id, :name, 'ACTIVE')"),
+                                {"scat_id": int(parent_scat_id), "name": new_cat_name.strip()}
+                            )
+                            conn.commit()
+                            conn.close()
                             st.success(f"Unit '{new_cat_name.strip()}' ditambahkan!")
                             st.rerun()
-                        except Exception:
-                            st.error("Kategori unit tersebut sudah ada.")
+                        except Exception as e:
+                            conn.rollback()
+                            conn.close()
+                            st.error(f"Gagal menambah unit: {e}")
                     else:
                         st.warning("Nama tidak boleh kosong.")
         else:
-            st.warning("⚠️ Harap buat 'Master Kategori Layanan' terlebih dahulu pada tab sebelumnya.")
+            st.warning("⚠️ Harap buat 'Master Kategori Layanan' yang aktif terlebih dahulu.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
-        st.markdown("<div class='master-box-title'>Daftar Kategori Unit Aktif</div>", unsafe_allow_html=True)
+        st.markdown("<div class='master-box-title'>Daftar Kategori Unit</div>", unsafe_allow_html=True)
         
         search_cat_kw = st.text_input("🔍 Cari Kategori Unit...", placeholder="Ketik nama unit...", key="search_cat_box", label_visibility="collapsed")
         st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
         query_cat = """
-            SELECT c.id as cat_id, c.name as cat_name, s.name as scat_name, c.service_category_id as scat_id
+            SELECT c.id as cat_id, c.name as cat_name, s.name as scat_name, c.service_category_id as scat_id, c.status as cat_status
             FROM categories c
             LEFT JOIN service_categories s ON c.service_category_id = s.id
             WHERE 1=1
         """
         params_cat = {}
         if search_cat_kw.strip():
-            query_cat += " AND c.name LIKE :kw"
+            query_cat += " AND c.name ILIKE :kw"
             params_cat["kw"] = f"%{search_cat_kw.strip()}%"
         query_cat += " ORDER BY s.name ASC, c.name ASC"
         
-        with get_db() as conn:
+        try:
             cats_df = pd.read_sql_query(text(query_cat), conn, params=params_cat)
+        except Exception:
+            conn.rollback()
+            query_cat_fb = """
+                SELECT c.id as cat_id, c.name as cat_name, s.name as scat_name, c.service_category_id as scat_id
+                FROM categories c
+                LEFT JOIN service_categories s ON c.service_category_id = s.id
+                ORDER BY s.name ASC, c.name ASC
+            """
+            cats_df = pd.read_sql_query(query_cat_fb, conn)
+            cats_df['cat_status'] = 'ACTIVE'
         
         if not cats_df.empty:
             st.markdown("""
                 <div style="background:#028090; color:white; padding:6px 10px; border-radius:4px; font-weight:700; font-size:12.5px; margin-bottom:4px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="width:30%;">Kategori Layanan Utama</span>
-                        <span style="width:58%;">Nama Kategori Unit</span>
-                        <span style="width:12%; text-align:center;">Aksi</span>
+                        <span style="width:24%;">Kategori Layanan Utama</span>
+                        <span style="width:40%;">Nama Kategori Unit</span>
+                        <span style="width:14%; text-align:center;">Status</span>
+                        <span style="width:7%; text-align:center;">Edit</span>
+                        <span style="width:7%; text-align:center;">Hide/Show</span>
+                        <span style="width:7%; text-align:center;">Hapus</span>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
@@ -395,19 +494,40 @@ def render_page():
                 cname = r['cat_name']
                 scat_name = r['scat_name'] or '-'
                 scat_id = r['scat_id']
+                cat_status = r.get('cat_status', 'ACTIVE') or 'ACTIVE'
+                is_hidden = cat_status == 'HIDDEN'
+                status_badge = "<span style='background:#EF4444; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>HIDDEN</span>" if is_hidden else "<span style='background:#10B981; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>ACTIVE</span>"
                 
                 st.markdown('<div class="master-row-card">', unsafe_allow_html=True)
-                col1, col2, col3, col4 = st.columns([3.0, 5.8, 1.0, 1.0])
+                col1, col2, col3, col4, col5, col6 = st.columns([2.4, 4.0, 1.4, 0.7, 0.7, 0.7])
                 with col1:
                     st.markdown(f"<b>{scat_name}</b>", unsafe_allow_html=True)
                 with col2:
-                    st.markdown(f"<b>{cname}</b>", unsafe_allow_html=True)
+                    st.markdown(f"<span style='{'color:#94A3B8; text-decoration:line-through;' if is_hidden else ''}'><b>{cname}</b></span>", unsafe_allow_html=True)
                 with col3:
+                    st.markdown(f"<div style='text-align:center;'>{status_badge}</div>", unsafe_allow_html=True)
+                with col4:
                     st.markdown('<div class="btn-act-edit">', unsafe_allow_html=True)
                     if st.button("✏️", key=f"ed_cat_{cid}", help="Edit", use_container_width=True):
                         edit_category_dialog(cid, cname, scat_id)
                     st.markdown('</div>', unsafe_allow_html=True)
-                with col4:
+                with col5:
+                    st.markdown('<div class="btn-act-hide">', unsafe_allow_html=True)
+                    hide_label = "👁️" if is_hidden else "🔒"
+                    if st.button(hide_label, key=f"hide_cat_{cid}", help="Sembunyikan / Tampilkan", use_container_width=True):
+                        new_st = 'ACTIVE' if is_hidden else 'HIDDEN'
+                        try:
+                            conn.execute(
+                                text("UPDATE categories SET status = :status WHERE id = :id"),
+                                {"status": new_st, "id": cid}
+                            )
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Gagal update: {e}")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                with col6:
                     st.markdown('<div class="btn-act-del">', unsafe_allow_html=True)
                     if st.button("🗑️", key=f"del_cat_{cid}", help="Hapus", use_container_width=True):
                         delete_category_dialog(cid, cname)
@@ -424,8 +544,11 @@ def render_page():
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
         st.markdown("<div class='master-box-title'>Tambah Tindakan & Tarif Baru</div>", unsafe_allow_html=True)
         
-        with get_db() as conn:
-            all_cat_df = pd.read_sql_query(text("SELECT id, name FROM categories ORDER BY name ASC"), conn)
+        try:
+            all_cat_df = pd.read_sql_query("SELECT id, name FROM categories WHERE status='ACTIVE' ORDER BY name ASC", conn)
+        except Exception:
+            conn.rollback()
+            all_cat_df = pd.read_sql_query("SELECT id, name FROM categories ORDER BY name ASC", conn)
         
         if not all_cat_df.empty:
             ac1, ac2, ac3, ac4 = st.columns([1.5, 2.2, 1.2, 0.8])
@@ -437,21 +560,25 @@ def render_page():
                 act_price = st.number_input("Tarif", min_value=0.0, step=10000.0, format="%.0f", key="input_new_act_price", label_visibility="collapsed")
             with ac4:
                 if st.button("Simpan ➕", use_container_width=True, type="primary", key="btn_save_act"):
-                    # Diubah dari act_price > 0 menjadi act_price >= 0 agar tarif 0 bisa disimpan
                     if act_name.strip() and act_price >= 0:
                         c_id = all_cat_df[all_cat_df['name'] == target_cat]['id'].values[0]
-                        with get_db() as conn:
-                            with conn.begin():
-                                conn.execute(
-                                    text("INSERT INTO actions (category_id, name, price) VALUES (:cid, :aname, :price)"),
-                                    {"cid": int(c_id), "aname": act_name.strip(), "price": act_price}
-                                )
-                        st.success("Disimpan!")
-                        st.rerun()
+                        try:
+                            conn.execute(
+                                text("INSERT INTO actions (category_id, name, price, status) VALUES (:cat_id, :name, :price, 'ACTIVE')"),
+                                {"cat_id": int(c_id), "name": act_name.strip(), "price": act_price}
+                            )
+                            conn.commit()
+                            conn.close()
+                            st.success("Disimpan!")
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            conn.close()
+                            st.error(f"Gagal menyimpan tindakan: {e}")
                     else:
-                        st.warning("Lengkapi!")
+                        st.warning("Lengkapi data dengan benar!")
         else:
-            st.warning("⚠️ Harap tambahkan 'Kategori Unit' terlebih dahulu.")
+            st.warning("⚠️ Harap pilih 'Kategori Unit' yang aktif terlebih dahulu.")
         st.markdown('</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="compact-container">', unsafe_allow_html=True)
@@ -467,32 +594,45 @@ def render_page():
         st.markdown("<div style='height: 4px;'></div>", unsafe_allow_html=True)
 
         query_acts = """
-            SELECT a.id as act_id, a.category_id as cat_id, c.name as cat_name, a.name as act_name, a.price as act_price
+            SELECT a.id as act_id, a.category_id as cat_id, c.name as cat_name, a.name as act_name, a.price as act_price, a.status as act_status
             FROM actions a 
             JOIN categories c ON a.category_id = c.id
             WHERE 1=1
         """
         params_acts = {}
         if search_act_kw.strip():
-            query_acts += " AND a.name LIKE :kw"
+            query_acts += " AND a.name ILIKE :kw"
             params_acts["kw"] = f"%{search_act_kw.strip()}%"
         if selected_cat_filter != "Semua Kategori Unit":
-            query_acts += " AND c.name = :cname"
-            params_acts["cname"] = selected_cat_filter
+            query_acts += " AND c.name = :cat_name"
+            params_acts["cat_name"] = selected_cat_filter
             
         query_acts += " ORDER BY c.name ASC, a.name ASC"
         
-        with get_db() as conn:
+        try:
             acts_df = pd.read_sql_query(text(query_acts), conn, params=params_acts)
+        except Exception:
+            conn.rollback()
+            query_acts_fb = """
+                SELECT a.id as act_id, a.category_id as cat_id, c.name as cat_name, a.name as act_name, a.price as act_price
+                FROM actions a 
+                JOIN categories c ON a.category_id = c.id
+                WHERE 1=1
+            """
+            acts_df = pd.read_sql_query(query_acts_fb, conn)
+            acts_df['act_status'] = 'ACTIVE'
         
         if not acts_df.empty:
             st.markdown("""
                 <div style="background:#028090; color:white; padding:6px 10px; border-radius:4px; font-weight:700; font-size:12.5px; margin-bottom:4px;">
                     <div style="display:flex; justify-content:space-between; align-items:center;">
-                        <span style="width:25%;">Kategori Unit</span>
-                        <span style="width:48%;">Nama Tindakan / Layanan</span>
-                        <span style="width:17%; text-align:right;">Tarif Standar</span>
-                        <span style="width:10%; text-align:center;">Aksi</span>
+                        <span style="width:20%;">Kategori Unit</span>
+                        <span style="width:38%;">Nama Tindakan / Layanan</span>
+                        <span style="width:16%; text-align:right;">Tarif Standar</span>
+                        <span style="width:10%; text-align:center;">Status</span>
+                        <span style="width:5%; text-align:center;">Edit</span>
+                        <span style="width:6%; text-align:center;">Hide/Show</span>
+                        <span style="width:5%; text-align:center;">Hapus</span>
                     </div>
                 </div>
             """, unsafe_allow_html=True)
@@ -502,21 +642,42 @@ def render_page():
                 acid = r['cat_id']
                 aname = r['act_name']
                 aprice = r['act_price']
+                act_status = r.get('act_status', 'ACTIVE') or 'ACTIVE'
+                is_hidden = act_status == 'HIDDEN'
+                status_badge = "<span style='background:#EF4444; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>HIDDEN</span>" if is_hidden else "<span style='background:#10B981; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>ACTIVE</span>"
                 
                 st.markdown('<div class="master-row-card">', unsafe_allow_html=True)
-                col1, col2, col3, col4, col5 = st.columns([2.5, 4.8, 1.8, 0.7, 0.7])
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([2.0, 3.8, 1.6, 1.0, 0.5, 0.6, 0.5])
                 with col1:
                     st.markdown(f"<b>{r['cat_name']}</b>", unsafe_allow_html=True)
                 with col2:
-                    st.markdown(f"{aname}", unsafe_allow_html=True)
+                    st.markdown(f"<span style='{'color:#94A3B8; text-decoration:line-through;' if is_hidden else ''}'>{aname}</span>", unsafe_allow_html=True)
                 with col3:
                     st.markdown(f"<div style='text-align:right; font-weight:700; color:#028090;'>{format_rupiah(aprice)}</div>", unsafe_allow_html=True)
                 with col4:
+                    st.markdown(f"<div style='text-align:center;'>{status_badge}</div>", unsafe_allow_html=True)
+                with col5:
                     st.markdown('<div class="btn-act-edit">', unsafe_allow_html=True)
                     if st.button("✏️", key=f"ed_act_{aid}", help="Edit", use_container_width=True):
                         edit_action_dialog(aid, acid, aname, aprice)
                     st.markdown('</div>', unsafe_allow_html=True)
-                with col5:
+                with col6:
+                    st.markdown('<div class="btn-act-hide">', unsafe_allow_html=True)
+                    hide_label = "👁️" if is_hidden else "🔒"
+                    if st.button(hide_label, key=f"hide_act_{aid}", help="Sembunyikan / Tampilkan", use_container_width=True):
+                        new_st = 'ACTIVE' if is_hidden else 'HIDDEN'
+                        try:
+                            conn.execute(
+                                text("UPDATE actions SET status = :status WHERE id = :id"),
+                                {"status": new_st, "id": aid}
+                            )
+                            conn.commit()
+                            st.rerun()
+                        except Exception as e:
+                            conn.rollback()
+                            st.error(f"Gagal update: {e}")
+                    st.markdown('</div>', unsafe_allow_html=True)
+                with col7:
                     st.markdown('<div class="btn-act-del">', unsafe_allow_html=True)
                     if st.button("🗑️", key=f"del_act_{aid}", help="Hapus", use_container_width=True):
                         delete_action_dialog(aid, aname)
@@ -525,3 +686,5 @@ def render_page():
         else:
             st.info("Tidak ada data tindakan ditemukan.")
         st.markdown('</div>', unsafe_allow_html=True)
+
+    conn.close()

@@ -1,22 +1,23 @@
 import streamlit as st
 import pandas as pd
 import os
-from db import get_db, render_header
 from sqlalchemy import text
+from db import get_db, render_header
 
 # --- MODAL DETAIL & EDIT ---
 @st.dialog("📋 Detail & Pengaturan Akun Karyawan", width="large")
 def show_edit_user_dialog(sel_id):
-    with get_db() as conn:
-        res = conn.execute(text("SELECT * FROM users WHERE id = :sid"), {"sid": sel_id})
-        user_row = res.fetchone()
-        col_names = list(res.keys())
-    
-    if not user_row:
-        st.error("Data user tidak ditemukan.")
-        return
+    conn = get_db()
+    try:
+        user_res = conn.execute(text("SELECT * FROM users WHERE id = :id"), {"id": sel_id})
+        user = user_res.mappings().fetchone()
+    except Exception:
+        user = None
 
-    user = dict(zip(col_names, user_row))
+    if not user:
+        st.error("Data user tidak ditemukan.")
+        conn.close()
+        return
 
     # Layout Header
     c1, c2 = st.columns([1.5, 2.5])
@@ -28,10 +29,8 @@ def show_edit_user_dialog(sel_id):
             disp_nm = user['full_name'] if user['full_name'] else user['username']
             disp_img = f"https://ui-avatars.com/api/?name={disp_nm}&background=028090&color=fff&size=256"
             
-        # Foto Kecil
         st.image(disp_img, width=130)
         
-        # Trik Perbesar Foto tanpa Nested Dialog menggunakan Expander
         with st.expander("🔍 Perbesar Foto"):
             st.image(disp_img, use_container_width=True)
             
@@ -66,35 +65,103 @@ def show_edit_user_dialog(sel_id):
                     f.write(e_photo.getbuffer())
                 photo_url_to_save = file_path
 
-            with get_db() as conn:
-                with conn.begin():
-                    conn.execute(text("""
-                        UPDATE users 
-                        SET username = :uname, full_name = :fname, password = :pwd, role = :role, photo_path = :ppath 
-                        WHERE id = :sid
-                    """), {
-                        "uname": e_username.strip(),
-                        "fname": e_fullname.strip(),
-                        "pwd": e_password.strip(),
-                        "role": e_role,
-                        "ppath": photo_url_to_save,
-                        "sid": sel_id
-                    })
-            st.success("✓ Perubahan akun berhasil disimpan!")
+            try:
+                conn.execute(text("""
+                    UPDATE users 
+                    SET username = :username, full_name = :full_name, password = :password, role = :role, photo_path = :photo_path 
+                    WHERE id = :id
+                """), {
+                    "username": e_username.strip(),
+                    "full_name": e_fullname.strip(),
+                    "password": e_password.strip(),
+                    "role": e_role,
+                    "photo_path": photo_url_to_save,
+                    "id": sel_id
+                })
+                conn.commit()
+                st.success("✓ Perubahan akun berhasil disimpan!")
+                st.rerun()
+            except Exception as e:
+                conn.rollback()
+                st.error(f"Gagal menyimpan perubahan: {e}")
+            finally:
+                conn.close()
+
+# --- MODAL KONFIRMASI HAPUS USER ---
+@st.dialog("⚠️ Konfirmasi Hapus Akun Pengguna", width="small")
+def delete_user_dialog(user_id, username):
+    st.markdown(f"""
+        <div style="text-align:center; padding: 5px 0;">
+            <div style="font-size: 32px; margin-bottom: 6px;">🗑️</div>
+            <div style="font-size: 14.5px; font-weight: 700; color: #0F172A; margin-bottom: 6px;">
+                Apakah Anda benar-benar ingin menghapus akun <b>{username}</b>?
+            </div>
+            <div style="font-size: 12px; color: #EF4444; font-weight: 600;">
+                Tindakan ini tidak dapat dibatalkan secara permanen.
+            </div>
+        </div>
+    """, unsafe_allow_html=True)
+    st.markdown("<hr style='margin:12px 0;'>", unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Batal", use_container_width=True, key=f"cancel_del_user_{user_id}"):
             st.rerun()
+    with c2:
+        if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_user_{user_id}"):
+            conn = get_db()
+            try:
+                conn.execute(text("DELETE FROM users WHERE id = :id"), {"id": user_id})
+                conn.commit()
+                conn.close()
+                st.success("Akun pengguna berhasil dihapus!")
+                st.rerun()
+            except Exception as e:
+                conn.rollback()
+                conn.close()
+                st.error(f"Gagal menghapus akun: {e}")
 
 def render_page():
     if st.session_state.get('role') != "Super Admin":
         st.error("⚠️ Akses ditolak! Menu ini khusus untuk Super Admin.")
         return
 
-    render_header("⚙️ Pengaturan & Manajemen Akun User", "Kelola data akun karyawan, ubah password, dan hak akses dengan kontrol penuh.")
+    render_header("⚙️ Pengaturan & Manajemen Akun User", "Kelola data akun karyawan, ubah password, hak akses, sembunyikan, atau hapus akun.")
 
-    with get_db() as conn:
-        try:
-            users_df = pd.read_sql_query(text("SELECT * FROM users"), conn)
-        except Exception:
-            users_df = pd.DataFrame(columns=['id', 'username', 'full_name', 'password', 'role', 'photo_path'])
+    conn = get_db()
+
+    try:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                id SERIAL PRIMARY KEY,
+                username TEXT UNIQUE,
+                full_name TEXT,
+                password TEXT,
+                role TEXT,
+                photo_path TEXT,
+                status TEXT DEFAULT 'ACTIVE'
+            )
+        """))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+
+    # Migrasi otomatis jika kolom status / photo_path belum ada
+    try:
+        res_cols = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='users'")).fetchall()
+        u_cols = [row[0] for row in res_cols]
+        if "photo_path" not in u_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN photo_path TEXT"))
+            conn.commit()
+        if "status" not in u_cols:
+            conn.execute(text("ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'ACTIVE'"))
+            conn.commit()
+    except Exception:
+        conn.rollback()
+
+    try:
+        users_df = pd.read_sql_query("SELECT * FROM users ORDER BY id ASC", conn)
+    except Exception:
+        users_df = pd.DataFrame(columns=['id', 'username', 'full_name', 'password', 'role', 'photo_path', 'status'])
 
     st.markdown("""
         <style>
@@ -107,6 +174,9 @@ def render_page():
             box-shadow: 0 1px 2px rgba(0,0,0,0.02);
         }
         .user-row:hover { border-color: #028090; }
+        .btn-act-edit button { background-color: #F59E0B !important; color: #FFF !important; }
+        .btn-act-hide button { background-color: #64748B !important; color: #FFF !important; }
+        .btn-act-del button { background-color: #EF4444 !important; color: #FFF !important; }
         </style>
     """, unsafe_allow_html=True)
 
@@ -126,18 +196,19 @@ def render_page():
 
             st.markdown("<div style='height: 15px;'></div>", unsafe_allow_html=True)
 
-            h1, h2, h3, h4, h5, h6 = st.columns([0.5, 1, 2.5, 1.5, 1.5, 1.5])
+            h1, h2, h3, h4, h5, h6, h7 = st.columns([0.5, 1, 2.2, 1.2, 1.2, 1.0, 1.4])
             h1.markdown("**ID**")
             h2.markdown("**Foto**")
             h3.markdown("**Nama Lengkap**")
             h4.markdown("**Username**")
-            h5.markdown("**Password**")
-            h6.markdown("<div style='text-align:center;'>**Aksi**</div>", unsafe_allow_html=True)
+            h5.markdown("**Status**")
+            h6.markdown("**Edit**")
+            h7.markdown("<div style='text-align:center;'>**Aksi Lain**</div>", unsafe_allow_html=True)
             st.markdown("<hr style='margin: 5px 0 10px 0; border: 1px solid #CBD5E1;'>", unsafe_allow_html=True)
 
             for _, r in filtered_df.iterrows():
                 st.markdown("<div class='user-row'>", unsafe_allow_html=True)
-                c1, c2, c3, c4, c5, c6 = st.columns([0.5, 1, 2.5, 1.5, 1.5, 1.5], vertical_alignment="center")
+                c1, c2, c3, c4, c5, c6, c7 = st.columns([0.5, 1, 2.2, 1.2, 1.2, 1.0, 1.4], vertical_alignment="center")
                 
                 c1.markdown(f"**#{r['id']}**")
                 
@@ -146,21 +217,48 @@ def render_page():
                     from db import get_base64_image
                     b64 = get_base64_image(p_path)
                     if b64:
-                        c2.markdown(f"<img src='data:image/png;base64,{b64}' style='width:45px; height:45px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
+                        c2.markdown(f"<img src='data:image/png;base64,{b64}' style='width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
                     else:
-                        c2.image(p_path, width=45)
+                        c2.image(p_path, width=42)
                 else:
                     disp_nm = r['full_name'] if r['full_name'] else r['username']
-                    c2.markdown(f"<img src='https://ui-avatars.com/api/?name={disp_nm}&background=028090&color=fff' style='width:45px; height:45px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
+                    c2.markdown(f"<img src='https://ui-avatars.com/api/?name={disp_nm}&background=028090&color=fff' style='width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
                 
-                c3.markdown(f"<strong style='color:#0F172A;'>{r['full_name']}</strong><br><span style='font-size:12px; color:#028090; font-weight:700;'>{r['role']}</span>", unsafe_allow_html=True)
+                user_status = r.get('status', 'ACTIVE') or 'ACTIVE'
+                is_hidden = user_status == 'HIDDEN'
+                status_badge = "<span style='background:#EF4444; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>HIDDEN</span>" if is_hidden else "<span style='background:#10B981; color:white; padding:2px 6px; border-radius:4px; font-size:10px;'>ACTIVE</span>"
+
+                c3.markdown(f"<span style='{'color:#94A3B8; text-decoration:line-through;' if is_hidden else 'color:#0F172A;'}'><strong>{r['full_name']}</strong></span><br><span style='font-size:11.5px; color:#028090; font-weight:700;'>{r['role']}</span>", unsafe_allow_html=True)
                 c4.markdown(f"`{r['username']}`")
-                c5.markdown(f"<code style='color:#EF4444; font-weight:bold;'>{r['password']}</code>", unsafe_allow_html=True)
+                c5.markdown(f"<div style='text-align:center;'>{status_badge}</div>", unsafe_allow_html=True)
                 
                 with c6:
-                    if st.button("👁️ / ✏️ Detail", key=f"btn_edit_{r['id']}", use_container_width=True):
+                    st.markdown('<div class="btn-act-edit">', unsafe_allow_html=True)
+                    if st.button("✏️ Edit", key=f"btn_edit_{r['id']}", use_container_width=True):
                         show_edit_user_dialog(r['id'])
+                    st.markdown('</div>', unsafe_allow_html=True)
                         
+                with c7:
+                    sub_c1, sub_c2 = st.columns(2)
+                    with sub_c1:
+                        st.markdown('<div class="btn-act-hide">', unsafe_allow_html=True)
+                        hide_label = "👁️" if is_hidden else "🔒"
+                        if st.button(hide_label, key=f"hide_user_{r['id']}", help="Sembunyikan / Tampilkan", use_container_width=True):
+                            new_st = 'ACTIVE' if is_hidden else 'HIDDEN'
+                            try:
+                                conn.execute(text("UPDATE users SET status = :status WHERE id = :id"), {"status": new_st, "id": r['id']})
+                                conn.commit()
+                                st.rerun()
+                            except Exception as e:
+                                conn.rollback()
+                                st.error(f"Gagal update status: {e}")
+                        st.markdown('</div>', unsafe_allow_html=True)
+                    with sub_c2:
+                        st.markdown('<div class="btn-act-del">', unsafe_allow_html=True)
+                        if st.button("🗑️", key=f"del_user_{r['id']}", help="Hapus Akun", use_container_width=True):
+                            delete_user_dialog(r['id'], r['username'])
+                        st.markdown('</div>', unsafe_allow_html=True)
+
                 st.markdown("</div>", unsafe_allow_html=True)
         else:
             st.info("Belum ada data user.")
@@ -191,20 +289,22 @@ def render_page():
                             f.write(a_photo.getbuffer())
 
                     try:
-                        with get_db() as conn:
-                            with conn.begin():
-                                conn.execute(text("""
-                                    INSERT INTO users (username, full_name, password, role, photo_path) 
-                                    VALUES (:uname, :fname, :pwd, :role, :ppath)
-                                """), {
-                                    "uname": a_username.strip(),
-                                    "fname": a_fullname.strip(),
-                                    "pwd": a_password.strip(),
-                                    "role": a_role,
-                                    "ppath": saved_photo_path
-                                })
+                        conn.execute(text("""
+                            INSERT INTO users (username, full_name, password, role, photo_path, status) 
+                            VALUES (:username, :full_name, :password, :role, :photo_path, 'ACTIVE')
+                        """), {
+                            "username": a_username.strip(),
+                            "full_name": a_fullname.strip(),
+                            "password": a_password.strip(),
+                            "role": a_role,
+                            "photo_path": saved_photo_path
+                        })
+                        conn.commit()
                         st.success(f"✓ Akun karyawan **{a_fullname}** berhasil ditambahkan!")
                         st.rerun()
                     except Exception as e:
+                        conn.rollback()
                         st.error(f"Gagal menambah user (Username mungkin sudah ada / duplikat): {e}")
         st.markdown('</div>', unsafe_allow_html=True)
+
+    conn.close()
