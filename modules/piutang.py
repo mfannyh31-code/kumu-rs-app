@@ -5,35 +5,97 @@ from db import get_db, format_rupiah, render_header
 from sqlalchemy import text
 
 # =========================================================
-# MODAL KONFIRMASI HAPUS PIUTANG
+# MODAL HAPUS BERTAHAP (RIWAYAT DAHULU SEBELUM SEMUA)
 # =========================================================
-@st.dialog("⚠️ Konfirmasi Hapus Data Piutang", width="small")
+@st.dialog("🗑️ Hapus Riwayat & Data Piutang", width="large")
 def confirm_delete_piutang_dialog(debt_id, receipt_no, patient_name):
-    st.markdown(f"""
-        <div style="text-align:center; padding: 5px 0;">
-            <div style="font-size: 32px; margin-bottom: 6px;">🗑️</div>
-            <div style="font-size: 14.5px; font-weight: 700; color: #0F172A; margin-bottom: 6px;">
-                Yakin ingin menghapus piutang <b>{patient_name}</b> (No. Ref: #{receipt_no})?
+    with get_db() as conn:
+        res_debt = conn.execute(text("SELECT * FROM receivables WHERE id = :did"), {"did": debt_id})
+        d_row = res_debt.fetchone()
+        debt = dict(zip(list(res_debt.keys()), d_row)) if d_row else {}
+
+        res_pay = conn.execute(text("SELECT * FROM receivables_payments WHERE debt_id = :did ORDER BY id DESC"), {"did": debt_id})
+        p_rows = res_pay.fetchall()
+        history_pay = [dict(zip(list(res_pay.keys()), r)) for r in p_rows]
+
+    st.markdown(f"Pasien: **{patient_name}** | No. Ref: **{receipt_no}**")
+    st.markdown("<hr style='margin:10px 0;'>", unsafe_allow_html=True)
+
+    if history_pay:
+        st.markdown("⚠️ **Masih terdapat riwayat pembayaran tercatat.** Silakan hapus riwayat pembayaran di bawah ini terlebih dahulu satu per satu sebelum dapat menghapus seluruh data piutang.")
+        st.markdown("<div style='height:8px;'></div>", unsafe_allow_html=True)
+        
+        for idx, hp in enumerate(history_pay, 1):
+            hp_id = hp['id']
+            hp_shift = hp['shift'] if hp.get('shift') else 'Pagi'
+            
+            c_info, c_btn = st.columns([3, 1])
+            with c_info:
+                st.markdown(f"""
+                    <div style="background:#F8FAFC; border:1px solid #CBD5E1; padding:8px 12px; border-radius:6px; margin-bottom:5px; font-size:12.5px;">
+                        <strong>{idx}. Tgl: {hp['pay_date']} (Shift: {hp_shift})</strong> — <span style="color:#10B981; font-weight:800;">{format_rupiah(hp['amount'])}</span><br>
+                        <span style="color:#475569; font-size:11.5px;">Metode: <b>{hp['method']}</b> | Kasir: <strong>{str(hp['input_by']).upper()}</strong></span>
+                    </div>
+                """, unsafe_allow_html=True)
+            with c_btn:
+                st.write("")
+                if st.button("Hapus Histori", key=f"del_hp_{hp_id}", use_container_width=True, type="primary"):
+                    with get_db() as conn_h:
+                        with conn_h.begin():
+                            # Hapus satu histori pembayaran
+                            conn_h.execute(text("DELETE FROM receivables_payments WHERE id = :hid"), {"hid": hp_id})
+                            
+                            # Hitung ulang sisa piutang dan kembalikan status item
+                            res_sum = conn_h.execute(text("SELECT SUM(amount) FROM receivables_payments WHERE debt_id = :did"), {"did": debt_id}).fetchone()
+                            tot_paid_real = float(res_sum[0] or 0.0) if res_sum else 0.0
+                            
+                            tot_bill_val = float(debt.get('total_bill', 0.0) or 0.0)
+                            new_rem = max(0.0, tot_bill_val - tot_paid_real)
+                            new_st = "Lunas" if new_rem <= 0 else "Belum Lunas"
+                            
+                            conn_h.execute(text("UPDATE receivables_items SET paid_status = 'Belum Lunas' WHERE debt_id = :did"), {"did": debt_id})
+                            
+                            items_res = conn_h.execute(text("SELECT id, amount FROM receivables_items WHERE debt_id = :did ORDER BY id ASC"), {"did": debt_id}).fetchall()
+                            temp_sisa_bayar = tot_paid_real
+                            
+                            for itm_id, itm_amt in items_res:
+                                if temp_sisa_bayar >= itm_amt:
+                                    conn_h.execute(text("UPDATE receivables_items SET paid_status = 'Lunas' WHERE id = :iid"), {"iid": itm_id})
+                                    temp_sisa_bayar -= itm_amt
+                                else:
+                                    break
+
+                            conn_h.execute(text("""
+                                UPDATE receivables 
+                                SET paid_amount = :pamt, remaining_debt = :remdb, status = :st 
+                                WHERE id = :did
+                            """), {
+                                "pamt": tot_paid_real,
+                                "remdb": new_rem,
+                                "st": new_st,
+                                "did": debt_id
+                            })
+                    st.success("Riwayat pembayaran berhasil dihapus dan saldo/status piutang disesuaikan!")
+                    st.rerun()
+    else:
+        st.markdown("""
+            <div style="background:#F0FDF4; border:1px solid #BBF7D0; padding:12px; border-radius:8px; margin-bottom:12px; color:#166534; font-size:13px;">
+                ✓ Riwayat pembayaran sudah kosong. Anda sekarang dapat menghapus seluruh data piutang ini secara permanen.
             </div>
-            <div style="font-size: 12px; color: #EF4444; font-weight: 600;">
-                Seluruh rincian tagihan dan riwayat akan dihapus permanen.
-            </div>
-        </div>
-    """, unsafe_allow_html=True)
-    st.markdown("<hr style='margin:12px 0;'>", unsafe_allow_html=True)
-    c1, c2 = st.columns(2)
-    with c1:
-        if st.button("Batal", use_container_width=True, key=f"cancel_del_piu_{debt_id}"):
-            st.rerun()
-    with c2:
-        if st.button("Ya, Hapus", use_container_width=True, type="primary", key=f"confirm_del_piu_{debt_id}"):
+        """, unsafe_allow_html=True)
+        
+        if st.button("🗑️ Hapus Seluruh Data Piutang Ini", use_container_width=True, type="primary"):
             with get_db() as conn_del:
                 with conn_del.begin():
                     conn_del.execute(text("DELETE FROM receivables WHERE id = :did"), {"did": debt_id})
                     conn_del.execute(text("DELETE FROM receivables_items WHERE debt_id = :did"), {"did": debt_id})
                     conn_del.execute(text("DELETE FROM receivables_payments WHERE debt_id = :did"), {"did": debt_id})
-            st.success("Piutang berhasil dihapus!")
+            st.success("Data piutang berhasil dihapus permanen!")
             st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+    if st.button("Tutup", key=f"close_del_modal_{debt_id}", use_container_width=True):
+        st.rerun()
 
 # =========================================================
 # MODAL PEMBAYARAN & RIWAYAT PIUTANG (PARSIAL)
@@ -61,7 +123,6 @@ def bayar_piutang_dialog(debt_id, patient_name):
         debt_cols = list(res_debt.keys())
         debt_info = dict(zip(debt_cols, debt_row)) if debt_row else {}
         
-        # Hanya ambil item yang belum lunas (paid_status != 'Lunas')
         res_items = conn.execute(text("SELECT * FROM receivables_items WHERE debt_id = :did AND paid_status != 'Lunas'"), {"did": debt_id})
         item_rows = res_items.fetchall()
         item_cols = list(res_items.keys())
@@ -280,6 +341,18 @@ def edit_piutang_dialog(debt_id):
                                 new_rem = max(0.0, tot_bill_val - tot_paid_real)
                                 new_st = "Lunas" if new_rem <= 0 else "Belum Lunas"
                                 
+                                conn_h.execute(text("UPDATE receivables_items SET paid_status = 'Belum Lunas' WHERE debt_id = :did"), {"did": debt_id})
+                                
+                                items_res = conn_h.execute(text("SELECT id, amount FROM receivables_items WHERE debt_id = :did ORDER BY id ASC"), {"did": debt_id}).fetchall()
+                                temp_sisa_bayar = tot_paid_real
+                                
+                                for itm_id, itm_amt in items_res:
+                                    if temp_sisa_bayar >= itm_amt:
+                                        conn_h.execute(text("UPDATE receivables_items SET paid_status = 'Lunas' WHERE id = :iid"), {"iid": itm_id})
+                                        temp_sisa_bayar -= itm_amt
+                                    else:
+                                        break
+
                                 conn_h.execute(text("""
                                     UPDATE receivables 
                                     SET paid_amount = :pamt, remaining_debt = :remdb, status = :st 
@@ -291,7 +364,7 @@ def edit_piutang_dialog(debt_id):
                                     "did": debt_id
                                 })
                         
-                        st.success("Histori pembayaran dan shift berhasil dikoreksi!")
+                        st.success("Histori pembayaran dan status item piutang berhasil disinkronkan ulang!")
                         st.rerun()
     else:
         st.info("Belum ada riwayat pembayaran.")

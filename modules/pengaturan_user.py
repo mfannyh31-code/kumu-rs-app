@@ -50,9 +50,12 @@ def show_edit_user_dialog(sel_id):
         
         e_password = st.text_input("Password (Terlihat)", value=user['password'])
         
-        roles_lst = ["Super Admin", "Bendahara", "Kasir"]
-        curr_idx = roles_lst.index(user['role']) if user['role'] in roles_lst else 2
-        e_role = st.selectbox("Hak Akses (Role)", roles_lst, index=curr_idx)
+        roles_lst = ["Kasir", "Bendahara", "Manajer", "Asisten Manajer", "Staff Piutang", "Super Admin"]
+        curr_role = user['role']
+        if curr_role not in roles_lst:
+            roles_lst.append(curr_role)
+            
+        e_role = st.selectbox("Hak Akses (Role / Jabatan)", roles_lst, index=roles_lst.index(curr_role) if curr_role in roles_lst else 0)
         
         e_photo = st.file_uploader("Unggah Foto Profil Baru (Ganti Foto)", type=["png", "jpg", "jpeg"])
 
@@ -145,7 +148,6 @@ def render_page():
     except Exception:
         conn.rollback()
 
-    # Migrasi otomatis jika kolom status / photo_path belum ada
     try:
         res_cols = conn.execute(text("SELECT column_name FROM information_schema.columns WHERE table_name='users'")).fetchall()
         u_cols = [row[0] for row in res_cols]
@@ -271,15 +273,22 @@ def render_page():
         with st.form("form_add_user_new"):
             a_username = st.text_input("Username Login *")
             a_fullname = st.text_input("Nama Lengkap *")
-            
             a_password = st.text_input("Password Awal *")
             
-            a_role = st.selectbox("Hak Akses (Role) *", ["Kasir", "Bendahara", "Super Admin"])
+            # Opsi role pilihan dropdown atau input manual jika jabatan lain
+            role_options = ["Kasir", "Bendahara", "Manajer", "Asisten Manajer", "Staff Piutang", "Super Admin", "Lainnya (Ketik Manual)"]
+            selected_role_option = st.selectbox("Hak Akses (Role) *", role_options)
+            
+            if selected_role_option == "Lainnya (Ketik Manual)":
+                a_role = st.text_input("Masukkan Nama Jabatan / Role Baru *").strip()
+            else:
+                a_role = selected_role_option
+
             a_photo = st.file_uploader("Unggah Foto Profil Awal (Opsional)", type=["png", "jpg", "jpeg"])
 
             if st.form_submit_button("🚀 Daftarkan Karyawan", use_container_width=True, type="primary"):
-                if not a_username.strip() or not a_password.strip() or not a_fullname.strip():
-                    st.error("Username, Nama, dan Password wajib diisi!")
+                if not a_username.strip() or not a_password.strip() or not a_fullname.strip() or not a_role:
+                    st.error("Semua kolom bertanda bintang (*) wajib diisi dengan benar!")
                 else:
                     saved_photo_path = ""
                     if a_photo is not None:
@@ -300,7 +309,7 @@ def render_page():
                             "photo_path": saved_photo_path
                         })
                         conn.commit()
-                        st.success(f"✓ Akun karyawan **{a_fullname}** berhasil ditambahkan!")
+                        st.success(f"✓ Akun karyawan **{a_fullname}** dengan jabatan **{a_role}** berhasil ditambahkan!")
                         st.rerun()
                     except Exception as e:
                         conn.rollback()

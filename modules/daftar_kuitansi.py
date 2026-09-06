@@ -35,10 +35,32 @@ def confirm_delete_dialog(receipt_no):
     with c2:
         if st.button("🗑️ Ya, Hapus", use_container_width=True, key=f"confirm_del_{receipt_no}"):
             with get_db() as conn:
-                with conn.begin():
-                    conn.execute(text("DELETE FROM transaction_items WHERE receipt_no = :rno"), {"rno": str(receipt_no)})
-                    conn.execute(text("DELETE FROM transactions WHERE receipt_no = :rno"), {"rno": str(receipt_no)})
-            st.success(f"Kuitansi #{receipt_no} dihapus!")
+                # Ambil info deposit yang pernah terpotong sebelumnya untuk dikembalikan saldonya
+                old_tx = conn.execute(text("SELECT pay_deposit FROM transactions WHERE receipt_no = :rno"), {"rno": str(receipt_no)}).fetchone()
+                if old_tx and float(old_tx[0] or 0) > 0:
+                    existing_dep = conn.execute(text("""
+                        SELECT patient_id, patient_name 
+                        FROM deposits 
+                        WHERE notes LIKE :note_pattern AND amount < 0
+                        LIMIT 1
+                    """), {"note_pattern": f"%Kuitansi #{receipt_no}%"}).fetchone()
+                    
+                    if existing_dep:
+                        conn.execute(text("""
+                            INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
+                            VALUES (:pid, :pname, :amt, CURRENT_DATE, 'Pagi', 'Refund Hapus', :notes, 'ACTIVE', :iby)
+                        """), {
+                            "pid": existing_dep[0],
+                            "pname": existing_dep[1],
+                            "amt": float(old_tx[0]),
+                            "notes": f"Pengembalian saldo pembatalan kuitansi #{receipt_no}",
+                            "iby": str(st.session_state.get('user', 'admin')).upper()
+                        })
+
+                conn.execute(text("DELETE FROM transaction_items WHERE receipt_no = :rno"), {"rno": str(receipt_no)})
+                conn.execute(text("DELETE FROM transactions WHERE receipt_no = :rno"), {"rno": str(receipt_no)})
+                conn.commit()
+            st.success(f"Kuitansi #{receipt_no} dihapus dan saldo uang muka dikembalikan!")
             st.rerun()
 
 # =========================================================
@@ -96,6 +118,7 @@ def show_transaction_detail(receipt_no):
             
             tot_act = float(tx.get('total_actions_amount') or 0)
             tunai_v = float(tx.get('pay_tunai') or 0)
+            deposit_v = float(tx.get('pay_deposit') or 0)
             qris_v = float(tx.get('pay_qris') or 0)
             edc_v = float(tx.get('pay_edc') or 0)
             tf_v = float(tx.get('pay_transfer') or 0)
@@ -111,6 +134,9 @@ def show_transaction_detail(receipt_no):
                         </div>
                         <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                             <span>Tunai</span><span style="color:#0F172A; font-weight:600;">{format_angka(tunai_v)}</span>
+                        </div>
+                        <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                            <span>Potong Uang Muka</span><span style="color:#0F172A; font-weight:600;">{format_angka(deposit_v)}</span>
                         </div>
                         <div style="display:flex; justify-content:space-between; margin-bottom:4px;">
                             <span>Pengakuan Bendahara</span><span style="color:#0F172A; font-weight:600;">{format_angka(pengakuan_v)}</span>
@@ -147,7 +173,6 @@ def show_edit_dialog(receipt_no):
         col_names = list(res_tx.keys()) if row else []
         
         if not row:
-            conn.close()
             return
             
         tx = dict(zip(col_names, row))
@@ -340,7 +365,10 @@ def show_edit_dialog(receipt_no):
             if not updated_items_data:
                 st.error("Pilih minimal satu tindakan.")
             else:
-                with conn.begin():
+                try:
+                    old_deposit = float(tx.get('pay_deposit', 0) or 0.0)
+                    diff_deposit = pay_deposit - old_deposit
+
                     conn.execute(text("""
                         UPDATE transactions 
                         SET receipt_date = :rdate, shift = :shf, 
@@ -378,11 +406,39 @@ def show_edit_dialog(receipt_no):
                             "qty": itm['qty'],
                             "sub": itm['subtotal']
                         })
-                
-                if edit_rows_key in st.session_state:
-                    del st.session_state[edit_rows_key]
-                st.success("Perubahan data kuitansi dan tindakan berhasil disimpan!")
-                st.rerun()
+
+                    if diff_deposit != 0:
+                        existing_dep = conn.execute(text("""
+                            SELECT patient_id, patient_name 
+                            FROM deposits 
+                            WHERE notes LIKE :note_pattern AND amount < 0
+                            LIMIT 1
+                        """), {"note_pattern": f"%Kuitansi #{receipt_no}%"}).fetchone()
+
+                        if existing_dep:
+                            adjustment_amount = -float(diff_deposit)
+                            conn.execute(text("""
+                                INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
+                                VALUES (:pid, :pname, :amt, :ddate, :shf, 'Kuitansi (Edit)', :notes, 'USED', :iby)
+                            """), {
+                                "pid": existing_dep[0],
+                                "pname": existing_dep[1],
+                                "amt": adjustment_amount,
+                                "ddate": str(tgl_kuitansi),
+                                "shf": shift_val,
+                                "notes": f"Penyesuaian edit kuitansi #{receipt_no}",
+                                "iby": str(st.session_state.get('user', 'admin')).upper()
+                            })
+                    
+                    conn.commit()
+                    
+                    if edit_rows_key in st.session_state:
+                        del st.session_state[edit_rows_key]
+                    st.success("Perubahan data kuitansi dan penyesuaian uang muka berhasil disimpan!")
+                    st.rerun()
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Gagal memperbarui kuitansi: {e}")
 
 # =========================================================
 # HALAMAN UTAMA DAFTAR KUITANSI (CACHED STATE & FAST SORT)
@@ -543,9 +599,7 @@ def render_page():
     query_str = "SELECT id, shift, input_date, receipt_date, receipt_no, final_amount, cashier_username FROM transactions WHERE receipt_date LIKE :dmask"
     params = {"dmask": date_mask}
     
-    if current_role not in ["Super Admin", "Bendahara"]:
-        query_str += " AND UPPER(cashier_username) = :cuser"
-        params["cuser"] = current_logged_user
+    # Biarkan query menampilkan seluruh transaksi agar Bendahara, Manajer, dan Asisten Manajer dapat melihat semua data
 
     if ksr.strip():
         query_str += " AND cashier_username LIKE :ksr"
@@ -633,9 +687,7 @@ def render_page():
                 can_modify = False
                 if current_role == "Super Admin":
                     can_modify = True
-                elif current_role == "Bendahara" and row_cashier == current_logged_user:
-                    can_modify = True
-                elif current_role == "Kasir" and row_cashier == current_logged_user:
+                elif current_role in ["Bendahara", "Manajer", "Asisten Manajer", "Kasir"] and row_cashier == current_logged_user:
                     can_modify = True
 
                 if can_modify:

@@ -1,7 +1,7 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 from datetime import datetime
+from sqlalchemy import text
 from db import get_db, format_rupiah, render_header
 
 def render_page():
@@ -303,37 +303,61 @@ def render_page():
                 st.error(f"Gagal: Nominal yang diisikan ke Pengakuan Bendahara ({format_rupiah(pay_pengakuan)}) melebihi saldo Uang Muka yang tersedia ({format_rupiah(dep_avail)}).")
             else:
                 try:
-                    c = conn.cursor()
-                    
-                    c.execute("""INSERT INTO transactions 
+                    conn.execute(text("""INSERT INTO transactions 
                         (receipt_no, receipt_date, input_date, shift, cashier_username, 
                          total_actions_amount, final_amount, payment_method,
                          pay_tunai, pay_transfer, pay_edc, pay_qris, pay_va, pay_deposit, pay_pengembalian, pay_pengakuan_bendahara)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                        (no_urut_kertas.strip(), str(tgl_kuitansi), str(datetime.today().date()), shift_val, st.session_state.get('user', 'admin'), 
-                         grand_total_actions, sisa_tagihan, summary_method_str,
-                         pay_tunai, pay_transfer, pay_edc, pay_qris, pay_va, deposit_claimed, pay_pengembalian, pay_pengakuan))
+                        VALUES (:receipt_no, :receipt_date, :input_date, :shift, :cashier_username, 
+                         :total_actions_amount, :final_amount, :payment_method,
+                         :pay_tunai, :pay_transfer, :pay_edc, :pay_qris, :pay_va, :pay_deposit, :pay_pengembalian, :pay_pengakuan)"""),
+                        {
+                            "receipt_no": no_urut_kertas.strip(),
+                            "receipt_date": str(tgl_kuitansi),
+                            "input_date": str(datetime.today().date()),
+                            "shift": shift_val,
+                            "cashier_username": str(st.session_state.get('user', 'admin')),
+                            "total_actions_amount": grand_total_actions,
+                            "final_amount": sisa_tagihan,
+                            "payment_method": summary_method_str,
+                            "pay_tunai": pay_tunai,
+                            "pay_transfer": pay_transfer,
+                            "pay_edc": pay_edc,
+                            "pay_qris": pay_qris,
+                            "pay_va": pay_va,
+                            "pay_deposit": deposit_claimed,
+                            "pay_pengembalian": pay_pengembalian,
+                            "pay_pengakuan": pay_pengakuan
+                        })
 
                     for itm in items_data:
-                        c.execute("""INSERT INTO transaction_items 
+                        conn.execute(text("""INSERT INTO transaction_items 
                             (receipt_no, book_no, category_name, action_name, price, qty, discount, subtotal)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                            (no_urut_kertas.strip(), itm['book_no'], itm['category_name'], itm['action_name'], itm['price'], itm['qty'], itm['discount'], itm['subtotal']))
+                            VALUES (:receipt_no, :book_no, :category_name, :action_name, :price, :qty, :discount, :subtotal)"""),
+                            {
+                                "receipt_no": no_urut_kertas.strip(),
+                                "book_no": itm['book_no'],
+                                "category_name": itm['category_name'],
+                                "action_name": itm['action_name'],
+                                "price": itm['price'],
+                                "qty": itm['qty'],
+                                "discount": itm['discount'],
+                                "subtotal": itm['subtotal']
+                            })
 
                     if deposit_claimed > 0 and patient_rm:
-                        c.execute("""
+                        conn.execute(text("""
                             INSERT INTO deposits (patient_id, patient_name, amount, deposit_date, shift, payment_method, notes, status, input_by)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, 'USED', ?)
-                        """, (
-                            str(patient_rm).strip(), 
-                            str(dep_mapping[selected_dep]['name']).strip(), 
-                            -float(deposit_claimed), 
-                            str(tgl_kuitansi), 
-                            shift_val, 
-                            'Kuitansi', 
-                            f"Pemotongan Uang Muka Kuitansi #{no_urut_kertas.strip()}", 
-                            str(st.session_state.get('user', 'admin')).upper()
-                        ))
+                            VALUES (:patient_id, :patient_name, :amount, :deposit_date, :shift, :payment_method, :notes, 'USED', :input_by)
+                        """), {
+                            "patient_id": str(patient_rm).strip(),
+                            "patient_name": str(dep_mapping[selected_dep]['name']).strip(),
+                            "amount": -float(deposit_claimed),
+                            "deposit_date": str(tgl_kuitansi),
+                            "shift": shift_val,
+                            "payment_method": 'Kuitansi',
+                            "notes": f"Pemotongan Uang Muka Kuitansi #{no_urut_kertas.strip()}",
+                            "input_by": str(st.session_state.get('user', 'admin')).upper()
+                        })
 
                     conn.commit()
                     conn.close()
@@ -342,8 +366,9 @@ def render_page():
                     st.session_state.rows_list = [1, 2]
                     st.session_state.form_reset_counter += 1
                     st.rerun()
-                except sqlite3.IntegrityError:
-                    st.error("No. Urut Kertas sudah terdaftar di sistem. Gunakan nomor unik.")
+                except Exception as e:
+                    conn.rollback()
+                    st.error(f"Gagal menyimpan kuitansi (No. Urut Kertas mungkin sudah terdaftar): {e}")
 
     st.markdown('</div>', unsafe_allow_html=True)
     conn.close()

@@ -120,7 +120,11 @@ if not st.session_state.user:
                 if logged_in:
                     st.session_state.user = login_user
                     st.session_state.role = logged_in['role']
-                    st.session_state.current_menu = "dashboard"
+                    # Jika user adalah Staff Piutang, langsung arahkan ke menu piutang
+                    if logged_in['role'] == "Staff Piutang":
+                        st.session_state.current_menu = "piutang"
+                    else:
+                        st.session_state.current_menu = "dashboard"
                     st.rerun()
                 else:
                     st.error("Username atau Password salah!")
@@ -166,21 +170,31 @@ with st.sidebar:
     
     st.markdown("### 📌 **MENU NAVIGASI**")
     
-    menu_configs = [
-        ("dashboard", "📊 0. Dashboard Utama"),
-        ("daftar_kuitansi", "📋 1. Daftar Kuitansi"),
-        ("pengembalian", "💸 2. Pengembalian (Refund)"),
-        ("daftar_deposit", "📜 3. Daftar Uang Muka"),
-        ("piutang", "📑 4. Manajemen Piutang"),
-        ("laporan", "📊 5. Detail Laporan Kasir")
-    ]
-    
-    if current_rl in ["Bendahara", "Super Admin"]:
-        menu_configs.append(("rekon", "📑 6. Rekon Otomatis"))
-        menu_configs.append(("master", "⚙️ 7. Kelola Master Data"))
+    # Pengaturan menu berdasarkan role masing-masing
+    if current_rl == "Staff Piutang":
+        # Staff Piutang HANYA dapat mengakses menu manajemen piutang
+        menu_configs = [
+            ("piutang", "📑 Manajemen Piutang")
+        ]
+    else:
+        # Menu standar untuk Kasir, Bendahara, Manajer, Asisten Manajer, dan Super Admin
+        menu_configs = [
+            ("dashboard", "📊 0. Dashboard Utama"),
+            ("daftar_kuitansi", "📋 1. Daftar Kuitansi"),
+            ("pengembalian", "💸 2. Pengembalian (Refund)"),
+            ("daftar_deposit", "📜 3. Daftar Uang Muka"),
+            ("piutang", "📑 4. Manajemen Piutang"),
+            ("laporan", "📊 5. Detail Laporan Kasir")
+        ]
         
-    if current_rl == "Super Admin":
-        menu_configs.append(("pengaturan_user", "👤 8. Kelola Akun User"))
+        # Bendahara, Manajer, Asisten Manajer, dan Super Admin mendapatkan akses Rekon & Master Data
+        if current_rl in ["Bendahara", "Manajer", "Asisten Manajer", "Super Admin"]:
+            menu_configs.append(("rekon", "📑 6. Rekon Otomatis"))
+            menu_configs.append(("master", "⚙️ 7. Kelola Master Data"))
+            
+        # Hanya Super Admin yang dapat mengakses menu pengaturan user
+        if current_rl == "Super Admin":
+            menu_configs.append(("pengaturan_user", "👤 8. Kelola Akun User"))
         
     for menu_key, menu_label in menu_configs:
         if st.button(menu_label, key=f"nav_{menu_key}", use_container_width=True):
@@ -212,7 +226,13 @@ routes = {
 }
 
 current_selected_menu = st.session_state.current_menu
-if current_selected_menu == "rekon" and current_rl == "Kasir":
+
+# Proteksi akses halaman berdasarkan role
+if current_rl == "Staff Piutang":
+    if current_selected_menu not in ["piutang", "input_piutang", "laporan_piutang"]:
+        st.session_state.current_menu = "piutang"
+        st.rerun()
+elif current_selected_menu == "rekon" and current_rl not in ["Bendahara", "Manajer", "Asisten Manajer", "Super Admin"]:
     st.session_state.current_menu = "dashboard"
     st.rerun()
 elif current_selected_menu == "pengaturan_user" and current_rl != "Super Admin":
