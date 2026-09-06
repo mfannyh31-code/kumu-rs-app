@@ -1,6 +1,6 @@
 import streamlit as st
 import pandas as pd
-import os
+import base64
 from sqlalchemy import text
 from db import get_db, render_header
 
@@ -23,10 +23,14 @@ def show_edit_user_dialog(sel_id):
     c1, c2 = st.columns([1.5, 2.5])
     with c1:
         p_path = user['photo_path']
-        if p_path and os.path.exists(p_path):
+        disp_nm = user['full_name'] if user['full_name'] else user['username']
+        
+        # Cek apakah photo_path berisi data base64 atau url/path lama
+        if p_path and p_path.startswith("data:image"):
+            disp_img = p_path
+        elif p_path and not p_path.startswith("assets"):
             disp_img = p_path
         else:
-            disp_nm = user['full_name'] if user['full_name'] else user['username']
             disp_img = f"https://ui-avatars.com/api/?name={disp_nm}&background=028090&color=fff&size=256"
             
         st.image(disp_img, width=130)
@@ -62,11 +66,12 @@ def show_edit_user_dialog(sel_id):
         if st.form_submit_button("💾 Simpan Perubahan Akun", use_container_width=True, type="primary"):
             photo_url_to_save = user['photo_path']
             if e_photo is not None:
-                os.makedirs("assets", exist_ok=True)
-                file_path = os.path.join("assets", f"user_{e_username.strip()}.png")
-                with open(file_path, "wb") as f:
-                    f.write(e_photo.getbuffer())
-                photo_url_to_save = file_path
+                # Ubah file foto langsung ke format Base64 agar tersimpan permanen di database cloud
+                bytes_data = e_photo.getvalue()
+                b64_encoded = base64.b64encode(bytes_data).decode("utf-8")
+                file_ext = e_photo.name.split(".")[-1].lower()
+                mime_type = "image/jpeg" if file_ext in ["jpg", "jpeg"] else "image/png"
+                photo_url_to_save = f"data:{mime_type};base64,{b64_encoded}"
 
             try:
                 conn.execute(text("""
@@ -215,15 +220,13 @@ def render_page():
                 c1.markdown(f"**#{r['id']}**")
                 
                 p_path = r['photo_path']
-                if p_path and os.path.exists(p_path):
-                    from db import get_base64_image
-                    b64 = get_base64_image(p_path)
-                    if b64:
-                        c2.markdown(f"<img src='data:image/png;base64,{b64}' style='width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
-                    else:
-                        c2.image(p_path, width=42)
+                disp_nm = r['full_name'] if r['full_name'] else r['username']
+                
+                if p_path and p_path.startswith("data:image"):
+                    c2.markdown(f"<img src='{p_path}' style='width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
+                elif p_path and not p_path.startswith("assets"):
+                    c2.markdown(f"<img src='{p_path}' style='width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
                 else:
-                    disp_nm = r['full_name'] if r['full_name'] else r['username']
                     c2.markdown(f"<img src='https://ui-avatars.com/api/?name={disp_nm}&background=028090&color=fff' style='width:42px; height:42px; border-radius:50%; object-fit:cover; border:2px solid #CBD5E1;'>", unsafe_allow_html=True)
                 
                 user_status = r.get('status', 'ACTIVE') or 'ACTIVE'
@@ -275,7 +278,6 @@ def render_page():
             a_fullname = st.text_input("Nama Lengkap *")
             a_password = st.text_input("Password Awal *")
             
-            # Opsi role pilihan dropdown atau input manual jika jabatan lain
             role_options = ["Kasir", "Bendahara", "Manajer", "Asisten Manajer", "Staff Piutang", "Super Admin", "Lainnya (Ketik Manual)"]
             selected_role_option = st.selectbox("Hak Akses (Role) *", role_options)
             
@@ -292,10 +294,11 @@ def render_page():
                 else:
                     saved_photo_path = ""
                     if a_photo is not None:
-                        os.makedirs("assets", exist_ok=True)
-                        saved_photo_path = os.path.join("assets", f"user_{a_username.strip()}.png")
-                        with open(saved_photo_path, "wb") as f:
-                            f.write(a_photo.getbuffer())
+                        bytes_data = a_photo.getvalue()
+                        b64_encoded = base64.b64encode(bytes_data).decode("utf-8")
+                        file_ext = a_photo.name.split(".")[-1].lower()
+                        mime_type = "image/jpeg" if file_ext in ["jpg", "jpeg"] else "image/png"
+                        saved_photo_path = f"data:{mime_type};base64,{b64_encoded}"
 
                     try:
                         conn.execute(text("""
