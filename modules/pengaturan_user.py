@@ -1,6 +1,8 @@
 import streamlit as st
 import pandas as pd
 import base64
+import io
+from PIL import Image
 from sqlalchemy import text
 from db import get_db, render_header
 
@@ -66,12 +68,14 @@ def show_edit_user_dialog(sel_id):
         if st.form_submit_button("💾 Simpan Perubahan Akun", use_container_width=True, type="primary"):
             photo_url_to_save = user['photo_path']
             if e_photo is not None:
-                # Ubah file foto langsung ke format Base64 agar tersimpan permanen di database cloud
-                bytes_data = e_photo.getvalue()
-                b64_encoded = base64.b64encode(bytes_data).decode("utf-8")
-                file_ext = e_photo.name.split(".")[-1].lower()
-                mime_type = "image/jpeg" if file_ext in ["jpg", "jpeg"] else "image/png"
-                photo_url_to_save = f"data:{mime_type};base64,{b64_encoded}"
+                # Kompres foto terlebih dahulu agar ukuran file ringan dan tidak membuat aplikasi lemot
+                img = Image.open(e_photo)
+                img.thumbnail((300, 300))  # Batasi resolusi maksimal 300x300 px
+                
+                buffered = io.BytesIO()
+                img.save(buffered, format="JPEG", quality=75)  # Kompres kualitas ke 75%
+                b64_encoded = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                photo_url_to_save = f"data:image/jpeg;base64,{b64_encoded}"
 
             try:
                 conn.execute(text("""
@@ -294,11 +298,14 @@ def render_page():
                 else:
                     saved_photo_path = ""
                     if a_photo is not None:
-                        bytes_data = a_photo.getvalue()
-                        b64_encoded = base64.b64encode(bytes_data).decode("utf-8")
-                        file_ext = a_photo.name.split(".")[-1].lower()
-                        mime_type = "image/jpeg" if file_ext in ["jpg", "jpeg"] else "image/png"
-                        saved_photo_path = f"data:{mime_type};base64,{b64_encoded}"
+                        # Kompres foto pada menu tambah user baru
+                        img = Image.open(a_photo)
+                        img.thumbnail((300, 300))
+                        
+                        buffered = io.BytesIO()
+                        img.save(buffered, format="JPEG", quality=75)
+                        b64_encoded = base64.b64encode(buffered.getvalue()).decode("utf-8")
+                        saved_photo_path = f"data:image/jpeg;base64,{b64_encoded}"
 
                     try:
                         conn.execute(text("""
